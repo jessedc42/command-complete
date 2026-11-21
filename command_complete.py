@@ -9,16 +9,34 @@ import gzip
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shlex
 import sys
 import unicodedata
 
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 DATABASE = Path(__file__).resolve().with_name("catalog.json.gz")
+UBUNTU_DATABASE = DATABASE.with_name("catalog-ubuntu.json.gz")
 SHELL_WORD = re.compile(r"""(?:[^\s"'\\;&|<>()`]+|'[^']*'|"(?:[^"\\]|\\.)*"|\\.|'[^']*$|"(?:[^"\\]|\\.)*$)+""")
 PLAIN_TOKEN = re.compile(r"(?:\[|[\w./=,%@:#?+-]*)", re.ASCII)
+
+
+def catalog_path(system=None, distribution=None):
+    system = platform.system() if system is None else system
+    if system == "Darwin":
+        return DATABASE
+    if system == "Linux":
+        if distribution is None:
+            distribution = {}
+            for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator:
+                    distribution[key] = value.strip('"')
+        if distribution.get("ID") == "ubuntu" and distribution.get("VERSION_ID") == "24.04":
+            return UBUNTU_DATABASE
+    raise ValueError(f"No command catalog is available for {system}. Supported platforms are macOS and Ubuntu 24.04.")
 
 
 @dataclass(frozen=True)
@@ -126,9 +144,9 @@ class Catalog:
                 pending = None
             if options_enabled and word.startswith("-") and word != "-":
                 names, attached = read_options(word, flags, self.commands[command].get("short_options"))
-                if root in ("awk", "sed") and "-f" in names:
+                if root in ("awk", "sed") and any(name in ("-f", "--file") for name in names):
                     script_supplied = True
-                if root == "sed" and "-e" in names:
+                if root == "sed" and any(name in ("-e", "--expression") for name in names):
                     script_supplied = True
                 used_options.update(active_option_names(word, names, flags))
                 name = names[-1]
@@ -460,7 +478,8 @@ def main():
         parser.error("the draft must be a single line of printable text")
 
     try:
-        with gzip.open(DATABASE, "rt", encoding="utf-8") as snapshot:
+        selected_catalog = catalog_path()
+        with gzip.open(selected_catalog, "rt", encoding="utf-8") as snapshot:
             catalog = Catalog(json.load(snapshot))
         if args.matches:
             for match in catalog.matches(line):

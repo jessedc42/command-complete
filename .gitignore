@@ -1,0 +1,4 @@
+__pycache__/
+.DS_Store
+ubuntu-command-inventory.json
+ubuntu-command-reference.json

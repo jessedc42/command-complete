@@ -160,7 +160,9 @@ DESCRIPTION
 
         hints = manual_argument_hints(
             "DESCRIPTION\n     -setmanual networkservice ip subnet router\n"
-            "     -setdhcp networkservice [clientid]\n")
+            "             Set the address.\n"
+            "     -setdhcp networkservice [clientid]\n"
+            "             Enable DHCP.\n")
         flags = {"-setmanual": "value", "-setdhcp": "value", "-getinfo": "value"}
         catalog = Catalog({"commands": {"networksetup": {
             "flags": flags, "flag_arguments": hints,
@@ -238,6 +240,23 @@ EXAMPLES
             "-L": "Number of probes", "-o": "File", "--output": "File",
             "--color": "When (optional)",
         })
+
+    def test_gnu_manuals_allow_blank_lines_before_descriptions_and_operand_aliases(self):
+        from build_catalog import flag_descriptions, manual_argument_hints, manual_value_hints
+
+        content = """DESCRIPTION
+       -e script, --expression=script
+
+              Add the script to the commands to be executed.
+
+       --help display this help and exit
+       --version
+              Print version.
+"""
+        self.assertEqual(manual_value_hints(content), {"-e": "Script", "--expression": "Script"})
+        descriptions = flag_descriptions(content, {"-e": "value", "--expression": "value"})
+        self.assertEqual(descriptions["-e"], "Add the script to the commands to be executed.")
+        self.assertNotIn("--help", manual_argument_hints(content))
 
     def test_documentation_imports_simple_options_and_repeating_arguments(self):
         from build_catalog import usage_metadata

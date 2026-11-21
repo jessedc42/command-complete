@@ -13,7 +13,7 @@ import sqlite3
 import subprocess
 import tempfile
 
-from command_complete import DATABASE
+from command_complete import DATABASE, UBUNTU_DATABASE
 
 
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*")
@@ -117,9 +117,8 @@ def argument_label(name):
 
 def manual_value_hints(content):
     """Read metavariables from option headings in a rendered manual."""
-    aliases = rf"{FLAG}(?:\s*[,|]\s*{FLAG})*"
     value = rf"(?:<({PLACEHOLDER})>|({PLACEHOLDER}))"
-    heading = re.compile(rf"({aliases})(?:[ =]{value}|\[=({PLACEHOLDER})\])")
+    operand = re.compile(rf"({FLAG})(?:[ =]{value}|\[=?({PLACEHOLDER})\])")
     hints = {}
     section = ""
     for line in content.splitlines():
@@ -128,12 +127,22 @@ def manual_value_hints(content):
         if section not in ("DESCRIPTION", "FLAGS") and "OPTIONS" not in section:
             continue
         signature = re.split(r"\s{2,}", line.lstrip(), maxsplit=1)[0]
-        if match := heading.fullmatch(signature):
-            flags, marked, plain, optional = match.groups()
-            label = argument_label(marked or plain or optional)
-            if optional:
-                label += " (optional)"
-            hints.update(dict.fromkeys(re.findall(FLAG, flags), label))
+        pieces = re.split(r"\s*[,|]\s*(?=-)", signature)
+        names = []
+        label = None
+        for piece in pieces:
+            if match := operand.fullmatch(piece):
+                flag, marked, plain, optional = match.groups()
+                names.append(flag)
+                label = argument_label(marked or plain or optional)
+                if optional:
+                    label += " (optional)"
+            elif match := re.fullmatch(rf"({FLAG})(=)?", piece):
+                names.append(match[1])
+                if match[2]:
+                    label = argument_label(match[1].lstrip("-"))
+        if label:
+            hints.update(dict.fromkeys(names, label))
     return hints
 
 
@@ -141,7 +150,8 @@ def manual_argument_hints(content):
     """Read fixed sequences of operands from documented option headings."""
     result = {}
     section = ""
-    for line in content.splitlines():
+    lines = content.splitlines()
+    for index, line in enumerate(lines):
         if re.fullmatch(r"[A-Z][A-Z ]*", line):
             section = line
         if section not in ("DESCRIPTION", "FLAGS") and "OPTIONS" not in section:
@@ -151,6 +161,9 @@ def manual_argument_hints(content):
         if not match:
             continue
         flag, operands = match.groups()
+        following = next((text for text in lines[index + 1:] if text.strip()), "")
+        if not following or len(following) - len(following.lstrip()) <= len(line) - len(line.lstrip()):
+            continue
         if operands in ("on | off", "yes | no", "enable | disable"):
             result[flag] = [operands.replace(" | ", " or ").capitalize()]
             continue
@@ -190,8 +203,9 @@ def flag_descriptions(content, flags):
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
         if not stripped:
-            finish()
-            current, body = [], []
+            if body:
+                finish()
+                current, body = [], []
             continue
         names = []
         description = ""
@@ -677,17 +691,116 @@ def add_syntax_examples(commands):
             entry["flags"]["-e"] = "value"
             entry["flag_hints"]["-e"] = "SED expression"
             entry["flag_examples"] = {"-e": snippets}
+            if "--expression" in entry["flags"]:
+                entry["flags"]["--expression"] = "value"
+                entry["flag_hints"]["--expression"] = "SED expression"
+                entry["flag_examples"]["--expression"] = snippets
+                entry["argument_modes"].append(["--expression", ["Input file (optional)"]])
+            if "--file" in entry["flags"]:
+                entry["flags"]["--file"] = "value"
+                entry["flag_hints"]["--file"] = "Program file path"
+                entry["argument_modes"].append(["--file", ["Input file (optional)"]])
         else:
             entry["flags"].update({"-F": "value", "-v": "value"})
             entry["flag_hints"].update({"-F": "Field separator", "-v": "Variable assignment (name=value)"})
 
 
+def build_ubuntu_catalog(inventory, optional_catalog):
+    if inventory.get("system") != "Linux" or inventory.get("distribution", {}).get("ID") != "ubuntu":
+        raise ValueError("The inventory must describe Ubuntu Linux.")
+    commands = {name: {} for name in inventory["commands"]}
+    manuals = inventory.get("manuals", {})
+    for name, content in manuals.items():
+        if name not in commands:
+            continue
+        content = re.sub(".\x08", "", content)
+        content = re.sub(r"\x1b\[[0-9;]*m", "", content)
+        entry = commands[name]
+        flags = entry["flags"] = manual_options(content)
+        metadata = usage_metadata(content, name)
+        metadata["flag_hints"] = metadata.get("flag_hints", {}) | manual_value_hints(content)
+        apply_usage(entry, metadata)
+        entry["flag_descriptions"] = flag_descriptions(content, flags)
+        arguments = manual_argument_hints(content)
+        entry["flag_arguments"] = {flag: labels for flag, labels in arguments.items() if flag in flags}
+        for flag, labels in entry["flag_arguments"].items():
+            flags[flag] = "optional" if labels[0].endswith(" (optional)") else "value"
+            entry.setdefault("flag_hints", {})[flag] = labels[0]
+
+    for name in ("nc", "netcat", "nc.openbsd"):
+        locations = inventory["commands"].get(name, [])
+        if name not in commands or not any(Path(item.get("resolved_path", "")).name == "nc.openbsd"
+                                           for item in locations):
+            continue
+        entry = commands[name]
+        entry["arguments"] = ["Destination (optional)", "Port (optional)"]
+        entry["argument_modes"] = [
+            ["-U", ["Socket path"]],
+            ["-l", ["Listen port or bind address", "Port (if a bind address was given)"]],
+        ]
+        entry["short_options"] = True
+        entry["flag_conflicts"] = [[["-l"], ["-x"]], [["-l"], ["-z"]], [["-s"], ["-x"]]]
+        entry.setdefault("flag_hints", {}).update({
+            "-w": "Timeout in seconds", "-i": "Interval in seconds", "-q": "Delay after EOF in seconds",
+            "-p": "Source port", "-s": "Source address",
+        })
+    if "apt" in commands:
+        # apt's manual refers readers to apt-get for shared option details.
+        entry = commands["apt"]
+        shared = commands.get("apt-get", {}).get("flag_descriptions", {})
+        entry.setdefault("flag_descriptions", {}).update(
+            {flag: shared[flag] for flag in entry.get("flags", {}) if flag in shared})
+        entry["words"] = [
+            "update", "upgrade", "full-upgrade", "install", "reinstall", "remove",
+            "purge", "autoremove", "search", "show", "list", "edit-sources",
+        ]
+
+    # These CLIs have their own portable schemas, independent of the host's UNIX tools.
+    for name, entry in optional_catalog["commands"].items():
+        if name in ("aws", "kubectl") or name.startswith(("aws ", "kubectl ")):
+            commands[name] = entry
+    commands["command-complete"] = {"flags": {
+        "--matches": "switch", "--help": "switch", "--version": "switch",
+    }}
+    add_syntax_examples(commands)
+    return {
+        "commands": commands,
+        "values": {key: value for key, value in optional_catalog.get("values", {}).items()
+                   if key in ("aws", "kubectl") or key.startswith(("aws ", "kubectl "))},
+        "platform": {
+            "system": "Linux",
+            "distribution": inventory["distribution"],
+            "architecture": inventory.get("architecture"),
+        },
+        "sources": {
+            "manual_count": len(manuals),
+            "optional_cli_versions": optional_catalog.get("sources", {}),
+        },
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=DATABASE)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--inventory", type=Path, help="Ubuntu inventory JSON, optionally containing manuals")
+    parser.add_argument("--optional-catalog", type=Path, default=DATABASE,
+                        help="catalog providing portable AWS CLI and kubectl schemas")
     parser.add_argument("--aws-index", type=Path,
                         help="path to the AWS CLI v2 ac.index SQLite file")
     args = parser.parse_args()
+    if args.inventory:
+        try:
+            inventory = json.loads(args.inventory.read_text(encoding="utf-8"))
+            with gzip.open(args.optional_catalog, "rt", encoding="utf-8") as source:
+                optional_catalog = json.load(source)
+            data = build_ubuntu_catalog(inventory, optional_catalog)
+            output = args.output or UBUNTU_DATABASE
+            write_snapshot(output, data)
+        except (OSError, ValueError, KeyError) as error:
+            parser.exit(1, f"build_catalog: {error}\n")
+        print(f"Ubuntu catalog written to {output} using {len(inventory.get('manuals', {}))} manuals.")
+        return
+    args.output = args.output or DATABASE
 
     executable = path_commands()
     commands = {name: {} for name in executable}

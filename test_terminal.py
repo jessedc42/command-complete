@@ -84,6 +84,7 @@ class Terminal:
 
 
 class TerminalTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS command metadata")
     def test_system_profiler_value_hint_is_available_in_the_editor(self):
         with Terminal("system_profiler -detailLevel ") as terminal:
             terminal.wait_for(b"Argument: Level")
@@ -100,6 +101,7 @@ class TerminalTests(unittest.TestCase):
             terminal.wait_for_draft(draft + b"'Reservations[].Instances[].InstanceId'")
             self.assertEqual(terminal.process.wait(timeout=5), 0)
 
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS command metadata")
     def test_flag_description_is_shown_in_color_and_only_the_flag_is_inserted(self):
         with Terminal("ifconfig -l") as terminal:
             terminal.wait_for(b"List interface names")
@@ -150,6 +152,7 @@ class TerminalTests(unittest.TestCase):
             terminal.wait_for_draft(b"aws " + candidates[21] + b" ")
             self.assertEqual(terminal.process.wait(timeout=5), 0)
 
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS command metadata")
     def test_nc_keeps_unlisted_arguments_and_advances_the_hint(self):
         with Terminal("nc ") as terminal:
             terminal.wait_for(b"Argument: Host")
@@ -160,6 +163,7 @@ class TerminalTests(unittest.TestCase):
             terminal.wait_for_draft(b"nc unlisted.invalid 15432")
             self.assertEqual(terminal.process.wait(timeout=5), 0)
 
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS command metadata")
     def test_nc_shows_named_values_and_preserves_hand_typed_flags(self):
         with Terminal("nc -w ") as terminal:
             terminal.wait_for(b"Argument: Timeout in seconds")
@@ -167,6 +171,7 @@ class TerminalTests(unittest.TestCase):
             terminal.wait_for_draft(b"nc -w 3 -l -z")
             self.assertEqual(terminal.process.wait(timeout=5), 0)
 
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS command metadata")
     def test_nc_probe_count_hint_comes_from_installed_catalog(self):
         with Terminal("nc -L ") as terminal:
             terminal.wait_for(b"Argument: Number of probes")

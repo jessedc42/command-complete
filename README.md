@@ -4,7 +4,7 @@ Draft UNIX commands in a standalone terminal editor. The editor looks up candida
 
 ## Versioning
 
-The initial versioned release is 0.1.0. Run `command-complete --version` to check the installed version. The version lives in `command_complete.py` and releases use annotated Git tags such as `v0.1.0`.
+The current version is 0.2.0. Run `command-complete --version` to check the installed version. The version lives in `command_complete.py` and releases use annotated Git tags such as `v0.2.0`. See the [v0.2.0 release notes](releases/v0.2.0.md).
 
 During 0.x development, feature additions and breaking changes increase the minor version. Backward-compatible bug fixes increase the patch version. Version 1.0.0 will establish a stable command-line interface.
 
@@ -55,6 +55,22 @@ Press **Ctrl+G** from the shell prompt, either on an empty line or after typing 
 The macOS `/bin/bash` shipped on this machine is Bash 3.2. Start Homebrew Bash with `/opt/homebrew/bin/bash`, or zsh with `/bin/zsh`, and run the `source` command above. You can add that source line to your supported shell's startup file to load the binding automatically. The standalone `command-complete` command continues to print drafts to the terminal.
 
 ## Coverage
+
+The editor detects macOS or Ubuntu 24.04 at startup and loads that platform's offline catalog. The Ubuntu catalog includes 2,670 executable names from Ubuntu 24.04.5, metadata imported from 2,278 installed manuals, and portable AWS CLI and kubectl schemas. Those two optional CLIs remain available in the catalog when absent from the host.
+
+Ubuntu entries use their own documentation. For example, GNU `ls --block-size` is available on Ubuntu, and the Ubuntu OpenBSD netcat rules allow `nc -l -p`. The macOS catalogs retain their own flags and conflict rules. Commands without usable manual entries have name completion.
+
+To collect Ubuntu documentation from a Mac, replace `USER@UBUNTU_HOST` with your SSH destination:
+
+```sh
+ssh -T USER@UBUNTU_HOST 'bash -lc "python3 - --manuals"' \
+  < collect_inventory.py > ubuntu-command-reference.json
+python3 -B build_catalog.py --inventory ubuntu-command-reference.json
+```
+
+The collector reads installed manuals with `man`. The Ubuntu builder imports those manuals without requiring AWS CLI, kubectl, or mandoc on Ubuntu. Without collected manuals, the Ubuntu catalog provides executable names and the portable CLI schemas.
+
+The raw inventory and reference JSON files are local build inputs ignored by Git. The bundled `catalog-ubuntu.json.gz` supplies the offline Ubuntu catalog.
 
 The [coverage audit](coverage.md) lists commands with partial or missing flag descriptions in the latest audited snapshot.
 
