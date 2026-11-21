@@ -15,8 +15,9 @@ import sys
 import unicodedata
 
 
+__version__ = "0.1.0"
 DATABASE = Path(__file__).resolve().with_name("catalog.json.gz")
-SHELL_WORD = re.compile(r"""(?:[^\s"'\\;&|<>()`]+|'[^']*'|"(?:[^"\\]|\\.)*"|\\.)+""")
+SHELL_WORD = re.compile(r"""(?:[^\s"'\\;&|<>()`]+|'[^']*'|"(?:[^"\\]|\\.)*"|\\.|'[^']*$|"(?:[^"\\]|\\.)*$)+""")
 PLAIN_TOKEN = re.compile(r"(?:\[|[\w./=,%@:#?+-]*)", re.ASCII)
 
 
@@ -25,12 +26,14 @@ class Match:
     text: str
     start: int
     end: int
+    description: str = ""
 
 
 @dataclass(frozen=True)
 class Completion:
     matches: list[Match]
     hint: str | None = None
+    examples: tuple[str, ...] = ()
 
 
 def apply_match(line, match):
@@ -76,24 +79,32 @@ class Catalog:
             return Completion([])
         words, start, end = split
         prefix = line[start:cursor]
-        candidates, hint = self.candidates(words, prefix, line[end:])
+        candidates, hint, command, examples = self.candidates(words, prefix, line[end:])
+        descriptions = {}
+        if command:
+            root = words[0]
+            if root in ("aws", "kubectl"):
+                descriptions.update(self.commands[root].get("flag_descriptions", {}))
+            descriptions.update(self.commands[command].get("flag_descriptions", {}))
         matches = []
         if PLAIN_TOKEN.fullmatch(line[start:end]):
-            matches = [Match(word, start, end) for word in sorted(set(candidates))
+            matches = [Match(word, start, end, descriptions.get(word, "")) for word in sorted(set(candidates))
                        if word.startswith(prefix) and PLAIN_TOKEN.fullmatch(word)]
-        return Completion(matches, hint)
+        return Completion(matches, hint, examples)
 
     def candidates(self, words, prefix, following):
         if not words:
-            return self.children[""], None
+            return self.children[""], None, None, ()
 
         root = words[0]
         if root not in self.commands:
-            return [], None
+            return [], None, None, ()
         command = self.commands[root].get("alias", root)
         flags = self.flags(root, command)
         positional = 0
+        script_supplied = False
         pending = None
+        pending_index = 0
         options_enabled = True
         used_options = set()
         for word in words[1:]:
@@ -103,17 +114,29 @@ class Catalog:
                 continue
             if pending:
                 kind = flags[pending]
-                if not word.startswith("-") or kind == "value":
-                    if kind != "many":
+                arguments = self.commands[command].get("flag_arguments", {}).get(pending, [])
+                optional = arguments and arguments[pending_index].endswith(" (optional)")
+                if not word.startswith("-") or (kind == "value" and not optional):
+                    pending_index += 1
+                    if kind != "many" and pending_index >= max(1, len(arguments)):
                         pending = None
+                    if not arguments:
+                        pending_index = 0
                     continue
                 pending = None
             if options_enabled and word.startswith("-") and word != "-":
                 names, attached = read_options(word, flags, self.commands[command].get("short_options"))
+                if root in ("awk", "sed") and "-f" in names:
+                    script_supplied = True
+                if root == "sed" and "-e" in names:
+                    script_supplied = True
                 used_options.update(active_option_names(word, names, flags))
                 name = names[-1]
+                pending_index = 0
                 if not attached and flags.get(name) in ("value", "optional", "many"):
                     pending = name
+                elif attached and len(self.commands[command].get("flag_arguments", {}).get(name, [])) > 1:
+                    pending, pending_index = name, 1
                 continue
 
             child = f"{command} {word}"
@@ -123,8 +146,11 @@ class Catalog:
             else:
                 positional += 1
 
-        if pending and (not prefix.startswith("-") or flags[pending] == "value"):
-            return self.flag_values(command, root, pending), self.flag_hint(command, root, pending)
+        pending_arguments = self.commands[command].get("flag_arguments", {}).get(pending, [])
+        optional = pending_arguments and pending_arguments[pending_index].endswith(" (optional)")
+        if pending and (not prefix.startswith("-") or (flags[pending] == "value" and not optional)):
+            return (self.flag_values(command, root, pending), self.flag_hint(command, root, pending, pending_index),
+                    command, self.examples_for(root, command, "flag_examples", pending))
 
         entry = self.commands[command]
         excluded = set()
@@ -142,13 +168,14 @@ class Catalog:
             flag, equals, _ = prefix.partition("=")
             if equals:
                 if flag in excluded:
-                    return [], None
+                    return [], None, command, ()
                 values = [flag + "=" + value for value in self.flag_values(command, root, flag)]
                 hint = None
                 if flags.get(flag) in ("value", "optional", "many", "attached"):
                     hint = self.flag_hint(command, root, flag)
-                return values, hint
-            return flags.keys() - excluded, None
+                return values, hint, command, self.examples_for(root, command, "flag_examples", flag)
+            return (flags.keys() - excluded, None, command,
+                    self.examples_for(root, command, "flag_examples", prefix))
 
         arguments = next(
             (labels for option, labels in entry.get("argument_modes", []) if option in used_options),
@@ -161,7 +188,15 @@ class Catalog:
                 suggestions = self.children[command] + entry.get("words", [])
             if not suggestions and not prefix and not arguments:
                 suggestions = flags.keys() - excluded
-        return suggestions, hint
+        examples = ()
+        if not script_supplied:
+            examples = self.examples_for(root, command, "argument_examples", str(positional))
+        return suggestions, hint, command, examples
+
+    def examples_for(self, root, command, kind, key):
+        local = self.commands[command].get(kind, {})
+        inherited = self.commands[root].get(kind, {}) if root in ("aws", "kubectl") else {}
+        return tuple(local.get(key, inherited.get(key, [])))
 
     def flags(self, root, command):
         options = self.commands[command].get("flags", {})
@@ -172,7 +207,9 @@ class Catalog:
     def flag_values(self, command, root, flag):
         return self.values.get(command, {}).get(flag, self.values.get(root, {}).get(flag, []))
 
-    def flag_hint(self, command, root, flag):
+    def flag_hint(self, command, root, flag, index=0):
+        if index:
+            return self.commands[command]["flag_arguments"][flag][index]
         local = self.commands[command].get("flag_hints", {})
         global_hints = self.commands[root].get("flag_hints", {})
         return local.get(flag) or global_hints.get(flag) or f"Value for {flag}"
@@ -231,21 +268,24 @@ def cell_width(char):
     return 2 if unicodedata.east_asian_width(char) in "WF" else 1
 
 
-def draw(screen, line, cursor, completion, selected, first, message):
+def draw(screen, line, cursor, completion, selected, first, message, flag_style=0):
     height, width = screen.getmaxyx()
     screen.erase()
 
-    def write(row, text, style=0):
-        if row >= height or width < 2:
+    def write(row, text, style=0, column=0, max_columns=None):
+        limit = width - column - 1
+        if max_columns is not None:
+            limit = min(limit, max_columns)
+        if row >= height or limit <= 0:
             return
         used = 0
         for index, char in enumerate(text):
             used += cell_width(char)
-            if used >= width - 1:
+            if used > limit:
                 text = text[:index]
                 break
         try:
-            screen.addstr(row, 0, text, style)
+            screen.addstr(row, column, text, style)
         except curses.error:
             # Terminals can resize between getmaxyx() and addstr().
             pass
@@ -263,21 +303,33 @@ def draw(screen, line, cursor, completion, selected, first, message):
     before = before[start:]
     write(0, prompt + before + after)
     matches = completion.matches
+    example_rows = min(len(completion.examples) + 1, max(0, height - 4)) if completion.examples else 0
     hint = f"Argument: {completion.hint}" if completion.hint else ""
     if matches:
-        end = min(first + max(height - 3, 0), len(matches))
+        end = min(first + max(height - 3 - example_rows, 0), len(matches))
         heading = f"Matches ({len(matches)})"
         if end > first and (first or end < len(matches)):
             heading += f"  {first + 1}-{end}"
         if hint:
             heading += f"  |  {hint}"
         write(1, heading, curses.A_BOLD)
+        description_column = min(6 + max(len(match.text) for match in matches), max(12, width // 2))
         for row, match in enumerate(matches[first:end], start=2):
             active = row - 2 + first == selected
+            style = curses.A_REVERSE if active else 0
+            name_style = flag_style if match.text.startswith("-") else 0
             write(row, ("  > " if active else "    ") + match.text,
-                  curses.A_REVERSE if active else 0)
+                  style | name_style,
+                  max_columns=description_column - 2 if match.description else None)
+            if match.description:
+                write(row, visible(match.description), style, column=description_column)
     elif hint:
         write(1, hint, curses.A_BOLD)
+    if example_rows:
+        top = height - 1 - example_rows if matches else 2
+        write(top, "Examples", curses.A_BOLD)
+        for row, example in enumerate(completion.examples[:example_rows - 1], top + 1):
+            write(row, visible(example))
     if height > 1:
         write(height - 1, message)
     try:
@@ -294,12 +346,23 @@ SELECTION_HELP = "Enter insert  |  Up/Down move  |  PgUp/PgDn jump  |  Esc hide 
 
 def edit(screen, catalog, line, cursor):
     curses.set_escdelay(50)
+    flag_style = curses.A_BOLD
+    if curses.has_colors() and "NO_COLOR" not in os.environ:
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_CYAN, -1)
+            flag_style |= curses.color_pair(1)
+        except curses.error:
+            pass
     completion = catalog.complete(line, cursor) if line[:cursor].strip() else Completion([])
     selected = None
     first = 0
     while True:
         matches = completion.matches
-        rows = max(screen.getmaxyx()[0] - 3, 1)
+        height = screen.getmaxyx()[0]
+        example_rows = min(len(completion.examples) + 1, max(0, height - 4)) if completion.examples else 0
+        rows = max(height - 3 - example_rows, 1)
         if selected is not None:
             first = max(selected - rows + 1, min(first, selected))
         message = EDITOR_HELP
@@ -307,7 +370,7 @@ def edit(screen, catalog, line, cursor):
             message = SELECTION_HELP
         elif matches:
             message = SUGGESTION_HELP
-        draw(screen, line, cursor, completion, selected, first, message)
+        draw(screen, line, cursor, completion, selected, first, message, flag_style)
         key = screen.get_wch()
         if key in ("\x03", "\x04"):
             return None
@@ -380,6 +443,7 @@ def edit_draft(screen, catalog, line, cursor):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action="version", version=f"command-complete {__version__}")
     parser.add_argument("--matches", action="store_true",
                         help="print candidates for the draft's last word and exit")
     parser.add_argument("--cursor", type=int, help=argparse.SUPPRESS)

@@ -67,6 +67,10 @@ class CompletionTests(unittest.TestCase):
             self.matches("aws ec2 describe-instances --instance-ids i-one i-two --p"),
             ["--profile"],
         )
+        self.assertEqual(
+            self.catalog.complete("aws ec2 describe-instances --instance-ids i-one i-two ").hint,
+            "Value for --instance-ids",
+        )
 
     def test_punctuation_and_incomplete_quotes_are_inert(self):
         self.assertEqual(self.matches("ls; ku"), [])
@@ -126,8 +130,96 @@ class CompletionTests(unittest.TestCase):
     def test_repeatable_positionals_keep_their_label(self):
         self.assertEqual(self.catalog.complete("mkdir one two ").hint, "Directory name")
 
+    def test_descriptions_follow_command_scope_and_are_never_inserted(self):
+        self.catalog.commands["kubectl"]["flag_descriptions"] = {"--namespace": "Choose a namespace"}
+        self.catalog.commands["kubectl get"]["flag_descriptions"] = {"--output": "Choose the output format"}
+        match, = self.catalog.matches("kubectl get --out")
+        self.assertEqual(match.description, "Choose the output format")
+        self.assertEqual(apply_match("kubectl get --out", match)[0], "kubectl get --output ")
+        inherited, = self.catalog.matches("kubectl get --names")
+        self.assertEqual(inherited.description, "Choose a namespace")
+        self.assertEqual(self.catalog.matches("ls -l")[0].description, "")
+
 
 class MetadataTests(unittest.TestCase):
+    def test_named_macos_flags_are_not_expanded_into_letters(self):
+        from build_catalog import manual_options
+
+        page = """SYNOPSIS
+     utility [-listDataTypes] [-json] [-help] [-ab]
+DESCRIPTION
+     -listDataTypes  List data types.
+     -json          Write JSON.
+     -a             First switch.
+     -b             Second switch.
+"""
+        self.assertEqual(set(manual_options(page)), {"-listDataTypes", "-json", "-help", "-a", "-b"})
+
+    def test_manual_operand_sequences_advance_through_quoted_values(self):
+        from build_catalog import manual_argument_hints
+
+        hints = manual_argument_hints(
+            "DESCRIPTION\n     -setmanual networkservice ip subnet router\n"
+            "     -setdhcp networkservice [clientid]\n")
+        flags = {"-setmanual": "value", "-setdhcp": "value", "-getinfo": "value"}
+        catalog = Catalog({"commands": {"networksetup": {
+            "flags": flags, "flag_arguments": hints,
+            "flag_hints": {flag: labels[0] for flag, labels in hints.items()},
+        }}})
+        self.assertEqual(catalog.complete('networksetup -setmanual "Wi-Fi" ').hint, "IP address")
+        self.assertEqual(catalog.complete('networksetup -setmanual "Wi-Fi" 192.0.2.1 ').hint, "Subnet mask")
+        self.assertEqual(catalog.complete('networksetup -setmanual "Wi-Fi" 192.0.2.1 255.255.255.0 ').hint,
+                         "Router address")
+        self.assertIn("-getinfo", [m.text for m in catalog.matches('networksetup -setdhcp "Wi-Fi" -get')])
+
+    def syntax_catalog(self):
+        from build_catalog import add_syntax_examples
+
+        commands = {
+            "aws": {"flags": {"--query": "value", "--profile": "value"}},
+            "aws ec2": {},
+            "aws ec2 describe-instances": {},
+            "awk": {"flags": {}}, "sed": {"flags": {"-n": "switch"}},
+        }
+        add_syntax_examples(commands)
+        return Catalog({"commands": commands})
+
+    def test_query_examples_use_response_fields_and_survive_unfinished_quotes(self):
+        catalog = self.syntax_catalog()
+        for suffix in ("--query", "--query ", "--query '", "--query 'Reservations[].", '--query="Reservations[]'):
+            with self.subTest(suffix=suffix):
+                result = catalog.complete("aws ec2 describe-instances " + suffix)
+                self.assertIn("InstanceId", " ".join(result.examples))
+        self.assertEqual(catalog.complete("aws ec2 describe-instances --profile ").examples, ())
+        self.assertEqual(catalog.complete("aws ec2 describe-instances --query 'Reservations[]' ").examples, ())
+
+    def test_program_examples_yield_to_input_files_and_option_values(self):
+        catalog = self.syntax_catalog()
+        self.assertTrue(catalog.complete('awk -F : ').examples)
+        self.assertTrue(catalog.complete('awk -F : "{ print ').examples)
+        self.assertFalse(catalog.complete("awk -F ").examples)
+        self.assertFalse(catalog.complete("awk -f script.awk ").examples)
+        self.assertFalse(catalog.complete("awk '{print $1}' ").examples)
+        self.assertTrue(catalog.complete("sed -n -e '").examples)
+        self.assertFalse(catalog.complete("sed -e 's/old/new/' ").examples)
+        self.assertFalse(catalog.complete("sed -f script.sed ").examples)
+
+    def test_flag_descriptions_read_aliases_and_stop_at_the_next_entry(self):
+        from build_catalog import flag_descriptions
+
+        page = """OPTIONS
+     -q, --quiet  Suppress output.
+             Additional details.
+
+     -o FILE
+             Write output to FILE.
+     --other
+             Other option.
+"""
+        self.assertEqual(flag_descriptions(page, {"-q": "switch", "--quiet": "switch", "-o": "value"}), {
+            "-q": "Suppress output.", "--quiet": "Suppress output.", "-o": "Write output to FILE.",
+        })
+
     def test_option_entries_provide_labels_outside_the_synopsis(self):
         from build_catalog import manual_value_hints
 

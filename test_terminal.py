@@ -32,6 +32,7 @@ class Terminal:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
         arguments = [sys.executable, str(EDITOR), "--", self.draft]
         env = dict(os.environ, TERM="xterm")
+        env.pop("NO_COLOR", None)
         if self.shell:
             arguments = self.shell
             env.update(PS1="TEST> ", HISTFILE="/dev/null")
@@ -83,6 +84,30 @@ class Terminal:
 
 
 class TerminalTests(unittest.TestCase):
+    def test_system_profiler_value_hint_is_available_in_the_editor(self):
+        with Terminal("system_profiler -detailLevel ") as terminal:
+            terminal.wait_for(b"Argument: Level")
+            terminal.send(b"mini\r")
+            terminal.wait_for_draft(b"system_profiler -detailLevel mini")
+            self.assertEqual(terminal.process.wait(timeout=5), 0)
+
+    def test_query_examples_are_visible_while_typing_and_preserve_the_draft(self):
+        draft = b"aws ec2 describe-instances --query "
+        with Terminal(draft.decode()) as terminal:
+            terminal.wait_for(b"Examples")
+            terminal.wait_for(b"list instance IDs")
+            terminal.send(b"'Reservations[].Instances[].InstanceId'\r")
+            terminal.wait_for_draft(draft + b"'Reservations[].Instances[].InstanceId'")
+            self.assertEqual(terminal.process.wait(timeout=5), 0)
+
+    def test_flag_description_is_shown_in_color_and_only_the_flag_is_inserted(self):
+        with Terminal("ifconfig -l") as terminal:
+            terminal.wait_for(b"List interface names")
+            self.assertIn(b"[36m", terminal.output)
+            terminal.send(b"\t\r\r")
+            terminal.wait_for_draft(b"ifconfig -l ")
+            self.assertEqual(terminal.process.wait(timeout=5), 0)
+
     def test_tab_completes_a_unique_match(self):
         with Terminal("aws eks update-kub") as terminal:
             terminal.wait_for(b"Ctrl+C cancel")

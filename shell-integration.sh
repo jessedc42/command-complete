@@ -24,8 +24,10 @@ if [ -n "${ZSH_VERSION-}" ]; then
 elif [ -n "${BASH_VERSION-}" ] && [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
     _command_complete_widget() {
         local draft
-        if draft=$(command command-complete --cursor "$READLINE_POINT" --result-fd 3 -- "$READLINE_LINE" \
-                3>&1 <&5 >&4) 4>&1 5<&0; then
+        if {
+            draft=$(command command-complete --cursor "$READLINE_POINT" --result-fd 3 -- "$READLINE_LINE" \
+                3>&1 <&5 >&4)
+        } 4>&1 5<&0; then
             READLINE_LINE=$draft
             READLINE_POINT=${#READLINE_LINE}
         fi

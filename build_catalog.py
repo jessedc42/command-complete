@@ -17,7 +17,7 @@ from command_complete import DATABASE
 
 
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*")
-FLAG = r"--[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?|-[A-Za-z0-9@#%,?]"
+FLAG = r"(?:--?[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?|-[%@#?,])"
 PLACEHOLDER = r"[A-Za-z][A-Za-z0-9_-]*"
 COMMON_OPERAND = re.compile(
     r"(?:(?:source|target|output|input)_)?"
@@ -65,15 +65,30 @@ def path_commands():
 def manual_options(content):
     section = ""
     flags = {}
+    declared = set()
+    for line in content.splitlines():
+        if re.fullmatch(r"[A-Z][A-Z ]*", line):
+            section = line
+        if section in ("DESCRIPTION", "FLAGS") or "OPTIONS" in section:
+            if match := re.match(rf"\s+({FLAG})(?=$|[\s,=\[])", line):
+                declared.add(match[1])
+    section = ""
     for line in content.splitlines():
         if re.fullmatch(r"[A-Z][A-Z ]*", line):
             section = line
         if section == "SYNOPSIS":
-            for token in re.findall(r"(?<=\[)-([A-Za-z0-9@#%,?]{2,})(?=\])", line):
-                flags.update(dict.fromkeys(("-" + char for char in token), "unknown"))
+            def expand_group(match):
+                has_named_options = any(len(flag) > 2 and not flag.startswith("--") for flag in declared)
+                if "-" + match[1] in declared or (
+                    has_named_options and not all("-" + char in declared for char in match[1])
+                ):
+                    return match[0]
+                return "[" + " ".join("-" + char for char in match[1]) + "]"
+
+            line = re.sub(r"\[-([A-Za-z0-9@#%,?]{2,})\]", expand_group, line)
             pattern = rf"(?:^|[\s\[|])({FLAG})(?=$|[\s\[\]=|,])"
             flags.update(dict.fromkeys(re.findall(pattern, line), "unknown"))
-        elif section == "DESCRIPTION" or "OPTIONS" in section:
+        elif section in ("DESCRIPTION", "FLAGS") or "OPTIONS" in section:
             # Manuals often put the option list inside DESCRIPTION.
             remaining = line.lstrip()
             while (match := re.match(rf"({FLAG})(?=$|[\s,=\[])", remaining)):
@@ -86,8 +101,17 @@ def manual_options(content):
 
 
 def argument_label(name):
+    labels = {
+        "networkservice": "Network service", "hardwareport": "Hardware port",
+        "networkservicename": "Network service name", "ip": "IP address",
+        "subnet": "Subnet mask", "router": "Router address",
+        "computername": "Computer name", "timeserver": "Time server",
+    }
+    if name in labels:
+        return labels[name]
     if name.startswith("num_"):
         return "Number of " + name[4:].replace("_", " ")
+    name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
     return name.replace("_", " ").replace("-", " ").capitalize()
 
 
@@ -101,7 +125,7 @@ def manual_value_hints(content):
     for line in content.splitlines():
         if re.fullmatch(r"[A-Z][A-Z ]*", line):
             section = line
-        if section != "DESCRIPTION" and "OPTIONS" not in section:
+        if section not in ("DESCRIPTION", "FLAGS") and "OPTIONS" not in section:
             continue
         signature = re.split(r"\s{2,}", line.lstrip(), maxsplit=1)[0]
         if match := heading.fullmatch(signature):
@@ -111,6 +135,81 @@ def manual_value_hints(content):
                 label += " (optional)"
             hints.update(dict.fromkeys(re.findall(FLAG, flags), label))
     return hints
+
+
+def manual_argument_hints(content):
+    """Read fixed sequences of operands from documented option headings."""
+    result = {}
+    section = ""
+    for line in content.splitlines():
+        if re.fullmatch(r"[A-Z][A-Z ]*", line):
+            section = line
+        if section not in ("DESCRIPTION", "FLAGS") and "OPTIONS" not in section:
+            continue
+        signature = re.split(r"\s{2,}", line.lstrip(), maxsplit=1)[0]
+        match = re.fullmatch(rf"({FLAG}) (.+)", signature)
+        if not match:
+            continue
+        flag, operands = match.groups()
+        if operands in ("on | off", "yes | no", "enable | disable"):
+            result[flag] = [operands.replace(" | ", " or ").capitalize()]
+            continue
+        tokens = operands.split()
+        if not all(re.fullmatch(rf"{PLACEHOLDER}|<{PLACEHOLDER}>|\[{PLACEHOLDER}\]", token)
+                   for token in tokens):
+            continue
+        labels = [argument_label(token.strip("<>[]")) +
+                  (" (optional)" if token.startswith("[") else "") for token in tokens]
+        if all(not label.endswith(" (optional)") for label in labels[:-1]):
+            result[flag] = labels
+    return result
+
+
+def brief_description(text):
+    text = " ".join(text.split())
+    sentence = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text, maxsplit=1)[0]
+    if len(sentence) > 110:
+        sentence = sentence[:107].rsplit(" ", 1)[0] + "..."
+    return sentence
+
+
+def flag_descriptions(content, flags):
+    """Extract indented manual entries and Cobra help option descriptions."""
+    descriptions = {}
+    current = []
+    body = []
+    heading_indent = 0
+
+    def finish():
+        if body:
+            summary = brief_description(" ".join(body))
+            for flag in current:
+                descriptions.setdefault(flag, summary)
+
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if not stripped:
+            finish()
+            current, body = [], []
+            continue
+        names = []
+        description = ""
+        if indent and stripped.startswith("-"):
+            signature, *inline = re.split(r"\s{2,}", stripped, maxsplit=1)
+            names = [flag for flag in re.findall(r"--?[\w][\w-]*|-[^\w\s,-]", signature) if flag in flags]
+            if inline:
+                description = inline[0]
+        if names:
+            finish()
+            current, body, heading_indent = names, [description] if description else [], indent
+        elif current and (indent > heading_indent or line.startswith("\t")):
+            body.append(stripped)
+        else:
+            finish()
+            current, body = [], []
+    finish()
+    return descriptions
 
 
 def usage_metadata(content, command, header="SYNOPSIS"):
@@ -245,7 +344,101 @@ def add_manuals(commands):
             metadata = usage_metadata(rendered, command)
             metadata["flag_hints"] = metadata.get("flag_hints", {}) | manual_value_hints(rendered)
             apply_usage(entry, metadata)
+            arguments = manual_argument_hints(rendered)
+            if arguments:
+                entry["flag_arguments"] = {flag: labels for flag, labels in arguments.items() if flag in flags}
+                for flag, labels in entry["flag_arguments"].items():
+                    flags[flag] = "optional" if labels[0].endswith(" (optional)") else "value"
+                    entry.setdefault("flag_hints", {})[flag] = labels[0]
+            descriptions = flag_descriptions(rendered, flags)
+            if descriptions:
+                entry["flag_descriptions"] = descriptions
+            if name == "ifconfig":
+                # This manual describes the main switches in prose paragraphs.
+                entry.setdefault("flag_descriptions", {}).update({
+                    "-a": "Show information about all interfaces",
+                    "-d": "Show interfaces that are down",
+                    "-u": "Show interfaces that are up",
+                    "-l": "List interface names",
+                    "-v": "Show more detailed interface status",
+                    "-C": "List available interface cloners",
+                    "-L": "Show IPv6 address lifetimes",
+                    "-m": "Show interface capabilities and supported media",
+                    "-r": "Show route reference counts",
+                    "-X": "Filter interface names by a regular expression",
+                    "-f": "Choose the output format",
+                })
     return count
+
+
+def add_networksetup_help(commands, executable):
+    if not executable:
+        return
+    try:
+        help_text = capture(executable, "-help")
+    except (OSError, subprocess.SubprocessError):
+        return
+    entry = commands["networksetup"]
+    for block in re.split(r"(?m)^Usage: networksetup ", help_text)[1:]:
+        heading, *body = block.splitlines()
+        match = re.match(rf"({FLAG})(?:\s+(.*))?$", heading.strip())
+        if not match:
+            continue
+        flag, operands = match.groups()
+        description = []
+        for line in body:
+            if not line.strip():
+                break
+            if not line[0].isspace():
+                break
+            description.append(line.strip())
+        if description:
+            entry.setdefault("flag_descriptions", {})[flag] = brief_description(" ".join(description))
+        entry.setdefault("flags", {}).setdefault(flag, "value" if operands else "switch")
+        if operands:
+            labels = re.findall(r"<([^<>]+)>|\[([A-Za-z][A-Za-z0-9_]*)\]", operands)
+            residue = re.sub(r"<[^<>]+>|\[[A-Za-z][A-Za-z0-9_]*\]", "", operands)
+            if labels and not residue.strip():
+                arguments = [argument_label(required or optional) +
+                             (" (optional)" if optional else "") for required, optional in labels]
+                if all(not label.endswith(" (optional)") for label in arguments[:-1]):
+                    entry.setdefault("flag_arguments", {})[flag] = arguments
+                    entry.setdefault("flag_hints", {})[flag] = arguments[0]
+
+
+def add_macos_hints(commands):
+    documented = {
+        "pmset": {
+            "-a": "Apply settings to all power sources",
+            "-b": "Apply settings to battery power",
+            "-c": "Apply settings to charger power",
+            "-u": "Apply settings to UPS power",
+            "-g": "Display power management settings",
+        },
+        "qlmanage": {
+            "-r": "Reset Quick Look and its generator cache",
+            "-m": "Show Quick Look server and generator information",
+            "-t": "Display generated thumbnails",
+            "-p": "Display generated previews",
+            "-h": "Display help",
+        },
+        "installer": {
+            "-pkg": "Installer package path",
+            "-target": "Target domain or mounted volume",
+        },
+        "pbcopy": {"-help": "Display usage information"},
+        "pbpaste": {"-help": "Display usage information"},
+    }
+    for command, descriptions in documented.items():
+        if command in commands:
+            entry = commands[command]
+            flags = entry.get("flags", {})
+            entry.setdefault("flag_descriptions", {}).update(
+                {flag: text for flag, text in descriptions.items() if flag in flags})
+    if "system_profiler" in commands:
+        entry = commands["system_profiler"]
+        entry["flags"]["-timeout"] = "value"
+        entry.setdefault("flag_hints", {})["-timeout"] = "Timeout in seconds (0 for unlimited)"
 
 
 def add_terraform(commands, executable):
@@ -355,7 +548,8 @@ def add_kubectl(commands, executable):
     # This invokes local Cobra help only, with no kubeconfig or plugin binaries.
     env["PATH"] = os.defpath
     version = capture(executable, "version", "--client", env=env).splitlines()[0]
-    _, _, global_flags = kube_help(capture(executable, "options", env=env))
+    global_help = capture(executable, "options", env=env)
+    _, _, global_flags = kube_help(global_help)
     visited = set()
 
     def visit(parts):
@@ -366,6 +560,7 @@ def add_kubectl(commands, executable):
         help_text = capture(executable, *parts, "--help", env=env)
         children, aliases, flags = kube_help(help_text)
         entry = commands[name] = {"flags": flags | {"-h": "switch", "--help": "switch"}}
+        entry["flag_descriptions"] = flag_descriptions(help_text, entry["flags"])
         apply_usage(entry, usage_metadata(help_text, name, "Usage:"))
         if parts:
             for alias in aliases:
@@ -375,6 +570,7 @@ def add_kubectl(commands, executable):
 
     visit(())
     commands["kubectl"]["flags"].update(global_flags)
+    commands["kubectl"]["flag_descriptions"].update(flag_descriptions(global_help, global_flags))
     commands["kubectl"]["flag_hints"] = {
         "-n": "Namespace", "--namespace": "Namespace",
         "--context": "Kubeconfig context name", "--kubeconfig": "Kubeconfig file path",
@@ -442,6 +638,50 @@ def write_snapshot(output, data):
         path.unlink(missing_ok=True)
 
 
+def add_syntax_examples(commands):
+    commands["aws"]["flag_examples"] = {"--query": [
+        "JMESPath field names depend on the command's response JSON.",
+        "'Items[].Name'  - project a field from every item",
+        "'Items[0].Name'  - read a field from the first item",
+        "'Items[?State==`running`].Name'  - filter, then project",
+    ]}
+    commands["aws ec2 describe-instances"]["flag_examples"] = {"--query": [
+        "'Reservations[].Instances[].InstanceId'  - list instance IDs",
+        "'Reservations[].Instances[].{ID:InstanceId,State:State.Name}'  - select named fields",
+        "'Reservations[].Instances[] | [?State.Name==`running`].InstanceId'  - filter running instances",
+    ]}
+    examples = {
+        "awk": [
+            "'{ print $1 }'  - print the first field of each record",
+            "'/error/ { print $0 }'  - print matching records",
+            "'$3 > 100 { print $1, $3 }'  - filter on a numeric field",
+        ],
+        "sed": [
+            "'s/old/new/g'  - replace all matches on each line",
+            "'/^#/d'  - delete lines starting with #",
+            "'1,5p'  - print lines 1-5 (use -n to suppress default output)",
+        ],
+    }
+    for name, snippets in examples.items():
+        if name not in commands:
+            continue
+        entry = commands[name]
+        entry["arguments"] = [f"{name.upper()} program", "Input file (optional)"]
+        entry["repeat_argument"] = "Input file (optional)"
+        entry["argument_examples"] = {"0": snippets}
+        entry["argument_modes"] = [["-f", ["Input file (optional)"]]]
+        entry.setdefault("flags", {})["-f"] = "value"
+        entry.setdefault("flag_hints", {})["-f"] = "Program file path"
+        if name == "sed":
+            entry["argument_modes"].append(["-e", ["Input file (optional)"]])
+            entry["flags"]["-e"] = "value"
+            entry["flag_hints"]["-e"] = "SED expression"
+            entry["flag_examples"] = {"-e": snippets}
+        else:
+            entry["flags"].update({"-F": "value", "-v": "value"})
+            entry["flag_hints"].update({"-F": "Field separator", "-v": "Variable assignment (name=value)"})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DATABASE)
@@ -452,11 +692,15 @@ def main():
     executable = path_commands()
     commands = {name: {} for name in executable}
     manual_count = add_manuals(commands)
+    add_networksetup_help(commands, executable.get("networksetup"))
+    add_macos_hints(commands)
     for name in ("cp", "mv"):
         if name in commands:
             commands[name]["arguments"] = ["Source path", "Target path or another source"]
     add_netcat_arguments(commands)
-    commands["command-complete"] = {"flags": {"--matches": "switch", "--help": "switch"}}
+    commands["command-complete"] = {"flags": {
+        "--matches": "switch", "--help": "switch", "--version": "switch",
+    }}
     if terraform := executable.get("terraform"):
         add_terraform(commands, terraform)
     aws = executable.get("aws")
@@ -475,6 +719,7 @@ def main():
     except (subprocess.SubprocessError, OSError, sqlite3.Error) as error:
         parser.exit(1, f"build_catalog: {error}\n")
 
+    add_syntax_examples(commands)
     output_formats = ["json", "yaml", "wide", "name", "go-template", "jsonpath"]
     data = {
         "commands": commands,
