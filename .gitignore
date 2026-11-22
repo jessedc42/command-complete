@@ -1,4 +1,5 @@
 __pycache__/
+.worktrees/
 .DS_Store
 ubuntu-command-inventory.json
 ubuntu-command-reference.json
