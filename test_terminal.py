@@ -192,10 +192,20 @@ class TerminalTests(unittest.TestCase):
 
     @unittest.skipUnless(Path("/bin/zsh").exists(), "requires macOS zsh")
     def test_zsh_returns_a_completed_draft_to_the_edit_buffer(self):
+        self.check_prompt_handoff(["/bin/zsh", "-f", "-i"])
+
+    def test_bash_returns_a_completed_draft_to_the_edit_buffer(self):
+        bash = "/opt/homebrew/bin/bash" if Path("/opt/homebrew/bin/bash").exists() else "/bin/bash"
+        major = subprocess.check_output([bash, "-c", 'printf "%s" "${BASH_VERSINFO[0]}"'], text=True)
+        if int(major) < 5:
+            self.skipTest("requires Bash 5+")
+        self.check_prompt_handoff([bash, "--noprofile", "--norc", "-i"])
+
+    def check_prompt_handoff(self, shell):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "marker"
             draft = shlex.join(["touch", str(marker)]).encode()
-            with Terminal(shell=["/bin/zsh", "-f", "-i"]) as terminal:
+            with Terminal(shell=shell) as terminal:
                 terminal.wait_for(b"TEST> ")
                 before_source = len(terminal.output)
                 terminal.send(f"source {shlex.quote(str(SHELL_INTEGRATION))}\r".encode())

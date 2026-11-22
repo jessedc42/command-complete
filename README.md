@@ -56,7 +56,7 @@ The macOS `/bin/bash` shipped on this machine is Bash 3.2. Start Homebrew Bash w
 
 ## Coverage
 
-The editor detects macOS or Ubuntu 24.04 at startup and loads that platform's offline catalog. The Ubuntu catalog includes 2,670 executable names from Ubuntu 24.04.5, metadata imported from 2,278 installed manuals, and portable AWS CLI and kubectl schemas. Those two optional CLIs remain available in the catalog when absent from the host.
+The editor detects macOS or Ubuntu 24.04 at startup and loads that platform's offline catalog. The Ubuntu catalog includes 2,670 executable names from Ubuntu 24.04.5, metadata imported from 2,278 installed manuals, and portable AWS CLI, kubectl, and Docker schemas. Those optional CLIs remain available in the catalog when absent from the host.
 
 Ubuntu entries use their own documentation. For example, GNU `ls --block-size` is available on Ubuntu, and the Ubuntu OpenBSD netcat rules allow `nc -l -p`. The macOS catalogs retain their own flags and conflict rules. Commands without usable manual entries have name completion.
 
@@ -77,6 +77,7 @@ The [coverage audit](coverage.md) lists commands with partial or missing flag de
 - The snapshot includes executable names from your macOS Bash login PATH. Standard UNIX flags come from installed manual pages where available, including documented Git, GitHub CLI, and Docker subcommands. Terraform help supplies flags for its main workflows.
 - AWS CLI v2 coverage comes from the AWS installation’s autocomplete index. It includes service operations, waiters, custom subcommands bundled with the CLI, and global flags. [AWS CLI source](https://github.com/aws/aws-cli/tree/v2)
 - kubectl coverage comes from the installed client’s help, including nested subcommands, aliases and global flags. It includes a static list of common resource types. [kubectl reference](https://kubernetes.io/docs/reference/kubectl/)
+- Docker coverage comes from the installed CLI's help tree, including built-in command groups and the installed Compose and Buildx plugins. Commands such as `docker stop` and `docker container stop` include flags, descriptions, and argument hints. Importing this help uses the client and does not require a running daemon.
 - Completion works on one command at a time. Live resource names, AWS profile names, custom aliases, plugins, filenames, and shell pipelines are outside the snapshot. Some PATH executables only have name completion because they lack a usable local manual. Man-page extraction is best effort.
 
 ## Refresh and verify
@@ -90,3 +91,11 @@ python3 -B -m unittest -v
 ```
 
 Use `--aws-index /path/to/ac.index` if your AWS install stores its index outside the packaged location. Manual flag extraction uses `mandoc` and `manpath`.
+
+### Test in Ubuntu with Docker
+
+```bash
+bash test-ubuntu.sh
+```
+
+This runs the tests in an Ubuntu 24.04 amd64 container. The repository is mounted read-only, and Python is installed inside the container. The tests exercise the terminal UI through a pseudoterminal, including the Bash Ctrl+G handoff and a check that the draft stays editable until a separate Enter. macOS-specific tests are skipped on Ubuntu. Docker removes the container when the run finishes.

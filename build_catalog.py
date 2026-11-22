@@ -262,13 +262,13 @@ def usage_metadata(content, command, header="SYNOPSIS"):
     data = {"flag_hints": hints} if hints else {}
     tokens = []
     for item in USAGE_TOKEN.findall(usage):
-        if (item.startswith("[-") and item.endswith("]")) or item in ("[options]", "[flags]"):
+        if (item.startswith("[-") and item.endswith("]")) or item.lower() in ("[options]", "[flags]"):
             continue
         optional = item.startswith("[") and item.endswith("]")
         value = item[1:-1] if optional else item
-        repeat = value.endswith(" ...")
+        repeat = value.endswith("...") and value != "..."
         if repeat:
-            value = value.removesuffix(" ...")
+            value = value.removesuffix("...").rstrip()
         if value == "..." and tokens:
             label, optional, _ = tokens[-1]
             tokens[-1] = (label, optional, True)
@@ -491,6 +491,79 @@ def add_terraform(commands, executable):
         visit(())
     except (subprocess.SubprocessError, OSError) as error:
         print(f"Terraform help coverage is partial. {error}")
+
+
+def docker_help(content):
+    children = []
+    flags = {}
+    hints = {}
+    aliases = []
+    section = ""
+    for line in content.splitlines():
+        if line and not line[0].isspace() and line.endswith(":"):
+            section = line
+            continue
+        if section.endswith("Commands:"):
+            if match := re.match(r"^  ([a-z][a-z0-9-]*)(\*)? {2,}\S", line):
+                name, plugin = match.groups()
+                if not plugin or name in ("compose", "buildx"):
+                    children.append(name)
+        elif section == "Aliases:":
+            aliases.extend(name.strip() for name in line.split(",") if name.strip().startswith("docker "))
+        elif section in ("Options:", "Global Options:"):
+            signature = re.split(r"\s{2,}", line.lstrip(), maxsplit=1)[0]
+            match = re.fullmatch(r"(?:(-[A-Za-z0-9]), )?(--[\w-]+)(?: ([A-Za-z][\w\[\]]*))?", signature)
+            if match:
+                short, long, kind = match.groups()
+                names = [long] + ([short] if short else [])
+                flags.update(dict.fromkeys(names, "value" if kind and kind != "bool" else "switch"))
+                if kind and kind != "bool":
+                    hints.update(dict.fromkeys(names, argument_label(long.lstrip("-"))))
+    return children, flags, hints, aliases
+
+
+def add_docker(commands, executable):
+    """Read client help only, including the Compose and Buildx help trees."""
+    aliases = {}
+    visited = set()
+
+    def visit(parts):
+        name = " ".join(("docker", *parts))
+        if name in visited:
+            return
+        visited.add(name)
+        content = capture(executable, *parts, "--help")
+        children, flags, hints, other_names = docker_help(content)
+        usage = re.search(r"(?m)^Usage:\s*(docker[^\n]*)", content)
+        if not usage or not (
+            usage[1].strip() == name or usage[1].startswith(name + " ") or name in other_names
+        ):
+            # A locally installed plugin may intercept a built-in's name and
+            # return its own root help. Do not recurse into that unrelated tree.
+            commands.setdefault(name, {})
+            return
+        entry = commands[name] = {
+            "flags": flags | {"--help": "switch"},
+            "flag_hints": hints,
+            "flag_descriptions": flag_descriptions(content, flags),
+        }
+        apply_usage(entry, usage_metadata(content, name, "Usage:"))
+        for alias in other_names:
+            aliases[alias] = name
+        for child in children:
+            visit((*parts, child))
+
+    visit(())
+    for alias, name in aliases.items():
+        commands.setdefault(alias, {"alias": name})
+    for name, entry in commands.items():
+        if name == "docker" or name.startswith("docker "):
+            for flag, description in entry.get("flag_descriptions", {}).items():
+                entry["flag_descriptions"][flag] = description.replace(str(Path.home()), "~")
+            for flag in ("-t", "--timeout"):
+                if flag in entry.get("flag_hints", {}) and name.endswith((" stop", " restart")):
+                    entry["flag_hints"][flag] = "Timeout in seconds"
+    return len(visited)
 
 
 def add_aws(commands, index):
@@ -757,7 +830,7 @@ def build_ubuntu_catalog(inventory, optional_catalog):
 
     # These CLIs have their own portable schemas, independent of the host's UNIX tools.
     for name, entry in optional_catalog["commands"].items():
-        if name in ("aws", "kubectl") or name.startswith(("aws ", "kubectl ")):
+        if name in ("aws", "kubectl", "docker") or name.startswith(("aws ", "kubectl ", "docker ")):
             commands[name] = entry
     commands["command-complete"] = {"flags": {
         "--matches": "switch", "--help": "switch", "--version": "switch",
@@ -816,6 +889,8 @@ def main():
     }}
     if terraform := executable.get("terraform"):
         add_terraform(commands, terraform)
+    if docker := executable.get("docker"):
+        add_docker(commands, docker)
     aws = executable.get("aws")
     kubectl = executable.get("kubectl")
     index = args.aws_index

@@ -101,7 +101,7 @@ class Catalog:
         descriptions = {}
         if command:
             root = words[0]
-            if root in ("aws", "kubectl"):
+            if root in ("aws", "kubectl", "docker"):
                 descriptions.update(self.commands[root].get("flag_descriptions", {}))
             descriptions.update(self.commands[command].get("flag_descriptions", {}))
         matches = []
@@ -218,7 +218,7 @@ class Catalog:
 
     def flags(self, root, command):
         options = self.commands[command].get("flags", {})
-        if root in ("aws", "kubectl") and command != root:
+        if root in ("aws", "kubectl", "docker") and command != root:
             return self.commands[root]["flags"] | options
         return options
 

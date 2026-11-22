@@ -7,6 +7,19 @@ from command_complete import Catalog, DATABASE, UBUNTU_DATABASE, catalog_path
 
 
 class PlatformCatalogTests(unittest.TestCase):
+    def test_both_catalogs_include_docker_stop_with_scoped_options(self):
+        for path in (DATABASE, UBUNTU_DATABASE):
+            with self.subTest(path=path):
+                with gzip.open(path, "rt", encoding="utf-8") as source:
+                    catalog = Catalog(json.load(source))
+                self.assertEqual([m.text for m in catalog.matches("docker sto")], ["stop"])
+                self.assertTrue(catalog.matches("docker stop --time")[0].description)
+                self.assertEqual(catalog.complete("docker stop --timeout ").hint, "Timeout in seconds")
+                self.assertEqual(catalog.matches("docker stop --name"), [])
+                self.assertTrue(catalog.matches("docker run --name"))
+                self.assertEqual([m.text for m in catalog.matches("docker container sto")], ["stop"])
+                self.assertTrue(catalog.matches("docker --host local stop --sig"))
+
     def test_os_selects_the_matching_catalog(self):
         self.assertEqual(catalog_path("Darwin"), DATABASE)
         self.assertEqual(catalog_path("Linux", {"ID": "ubuntu", "VERSION_ID": "24.04"}), UBUNTU_DATABASE)

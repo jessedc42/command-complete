@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from command_complete import Catalog, apply_match
 
@@ -142,6 +143,50 @@ class CompletionTests(unittest.TestCase):
 
 
 class MetadataTests(unittest.TestCase):
+    def test_docker_import_stops_when_a_plugin_returns_unrelated_root_help(self):
+        from build_catalog import add_docker
+
+        pages = {
+            ("--help",): "Usage: docker [OPTIONS] COMMAND\n\nCommands:\n  swarm  Manage Swarm\n",
+            ("swarm", "--help"): "Usage: docker swarm COMMAND\n\nCommands:\n  init  Initialize\n",
+            ("swarm", "init", "--help"): "Usage: docker [OPTIONS] COMMAND\n\nCommands:\n  init  Docker Init\n",
+        }
+        commands = {}
+        with patch("build_catalog.capture", side_effect=lambda _, *args: pages[args]):
+            add_docker(commands, "docker")
+        self.assertIn("docker swarm init", commands)
+        self.assertNotIn("docker swarm init init", commands)
+
+    def test_docker_help_reads_subcommands_types_and_aliases(self):
+        from build_catalog import docker_help
+
+        content = """Management Commands:
+  container   Manage containers
+  compose*    Docker Compose
+  desktop*    Desktop settings
+Options:
+  -s, --signal string   Signal to send
+  -t, --timeout int     Wait in seconds
+      --all            Include all containers
+Aliases:
+  docker container stop, docker stop
+"""
+        children, flags, hints, aliases = docker_help(content)
+        self.assertEqual(children, ["container", "compose"])
+        self.assertEqual(flags["--all"], "switch")
+        self.assertEqual(flags["--signal"], "value")
+        self.assertEqual(flags["-t"], "value")
+        self.assertEqual(hints["--signal"], "Signal")
+        self.assertEqual(aliases, ["docker container stop", "docker stop"])
+
+    def test_docker_usage_keeps_repeated_container_arguments(self):
+        from build_catalog import usage_metadata
+
+        result = usage_metadata(
+            "Usage:  docker stop [OPTIONS] CONTAINER [CONTAINER...]\n\n", "docker stop", "Usage:")
+        self.assertEqual(result["arguments"], ["Container", "Container (optional)"])
+        self.assertEqual(result["repeat_argument"], "Container (optional)")
+
     def test_named_macos_flags_are_not_expanded_into_letters(self):
         from build_catalog import manual_options
 
