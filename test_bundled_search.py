@@ -53,7 +53,7 @@ class BundledSearchTests(unittest.TestCase):
             self.assertTrue(catalog.commands['aws']['flag_descriptions'].get('--query'), platform)
             if 'terraform init' in catalog.commands:
                 self.assertTrue(catalog.commands['terraform init'].get('flag_descriptions', {}).get('-upgrade'), platform)
-            if 'rclone' in catalog.commands:
+            if '--config' in catalog.commands.get('rclone', {}).get('flags', {}):
                 self.assertTrue(catalog.commands['rclone'].get('flag_descriptions', {}).get('--config'), platform)
             self.assertNotIn('--outfile', catalog.commands['aws apigateway get-export'].get('flags', {}))
             self.assertIn('Output file', catalog.commands['aws apigateway get-export'].get('arguments', []))

@@ -15,9 +15,9 @@ Detailed gaps and source outcomes: `search-coverage-macos.json.gz`.
 
 Measured query times (including the first visible page):
 
-- `network reachability dog`: 16.34 ms; 18,563 matches.
 - `get disk space`: 14.24 ms; 2,369 matches.
 - `get inspect instances`: 208.02 ms; 167,638 matches.
+- `network reachability dog`: 16.34 ms; 18,563 matches.
 
 Largest remaining description gaps (review the detailed report for individual entries):
 
@@ -50,9 +50,9 @@ Detailed gaps and source outcomes: `search-coverage-ubuntu.json.gz`.
 
 Measured query times (including the first visible page):
 
-- `network reachability dog`: 17.3 ms; 19,312 matches.
-- `get disk space`: 14.42 ms; 2,449 matches.
-- `get inspect instances`: 213.14 ms; 168,622 matches.
+- `network reachability dog`: 17.57 ms; 19,312 matches.
+- `get disk space`: 14.86 ms; 2,449 matches.
+- `get inspect instances`: 216.22 ms; 168,622 matches.
 
 Largest remaining description gaps (review the detailed report for individual entries):
 

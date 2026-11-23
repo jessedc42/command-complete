@@ -329,7 +329,7 @@ def main():
             commands = data['commands']
             if commands is not portable:
                 merge_documentation(commands, {name: entry for name, entry in portable.items()
-                    if name.split()[0] in ('aws', 'docker', 'kubectl', 'terraform')})
+                    if name.split()[0] in ('aws', 'docker', 'kubectl', 'terraform', 'rclone')})
             if platform == 'macos' and os.uname().sysname == 'Darwin':
                 print('Reading installed macOS manuals...', flush=True)
                 documented = {name: {} for name in commands if ' ' not in name}
