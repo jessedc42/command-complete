@@ -1,4 +1,5 @@
 import unittest
+import shlex
 
 from command_complete import Catalog
 from command_search_index import SearchIndex
@@ -148,6 +149,101 @@ class SessionTests(unittest.TestCase):
         s.insert_entry(target)
         self.assertEqual(s.draft, 'kubectl --as-group dev get --as-group ')
         self.assertEqual(s.pending_hint, 'Group')
+
+    def test_resuming_visible_draft_restores_the_guided_queue(self):
+        s = session('paced')
+        s.freeze(next(e for e in s.index.entries_for_command('ping') if e.id.startswith('recipe:')))
+        s.set_draft(s.draft + '4')
+        s.back()
+        s.set_draft(s.draft)
+        self.assertEqual(s.pending_hint, 'Count')
+        self.assertTrue(s.confirm_value())
+        self.assertEqual(s.draft, 'ping -c 4 -i ')
+
+    def test_editing_a_backtracked_value_resumes_its_remaining_steps(self):
+        s = session('paced')
+        s.freeze(next(e for e in s.index.entries_for_command('ping') if e.id.startswith('recipe:')))
+        s.set_draft(s.draft + '4')
+        s.back()
+        s.set_draft(s.draft + '0')
+        self.assertEqual(s.pending_hint, 'Count')
+        self.assertTrue(s.confirm_value())
+        self.assertEqual(s.draft, 'ping -c 40 -i ')
+
+    def test_guidance_lists_remaining_operands_of_the_current_option(self):
+        commands = {'tool': {'description': 'Show paired values.', 'flags': {'--pair': 'value'},
+                             'flag_arguments': {'--pair': ['First', 'Second']}}}
+        catalog = Catalog({'commands': commands})
+        s = SearchSession(SearchIndex(catalog, build_metadata(commands, {})), catalog, 'paired')
+        s.freeze(next(r.entry for r in s.live.results if r.entry.options))
+        self.assertIn('<Second>', s.next_steps)
+
+    def test_escaped_trailing_space_survives_confirmation_and_insertion(self):
+        for suffix in ('foo\\ ', 'foo\\  '):
+            s = session('paced')
+            s.freeze(next(e for e in s.index.entries_for_command('ping') if e.id.startswith('recipe:')))
+            s.set_draft(s.draft + suffix)
+            self.assertTrue(s.confirm_value(), repr(suffix))
+            self.assertEqual(shlex.split(s.draft), ['ping', '-c', 'foo ', '-i'])
+        s = session()
+        s.freeze(entry(s, 'ping'))
+        s.set_draft('ping -c foo\\ ')
+        self.assertTrue(s.insert_entry(entry(s, 'ping -q')))
+        self.assertEqual(shlex.split(s.draft), ['ping', '-c', 'foo ', '-q'])
+
+    def test_reference_options_are_blocked_after_the_option_terminator(self):
+        s = session()
+        s.freeze(entry(s, 'ping'))
+        s.set_draft('ping -- ')
+        self.assertFalse(s.insert_entry(entry(s, 'ping -q')))
+        self.assertEqual(s.draft, 'ping -- ')
+        self.assertIn('--', s.message)
+        # A required option value of '--' is not an option terminator.
+        s.set_draft('ping -c -- ')
+        self.assertTrue(s.insert_entry(entry(s, 'ping -q')))
+
+    def test_shell_operators_preserve_the_primary_scope_and_literal_draft(self):
+        s = session()
+        s.freeze(entry(s, 'ping'))
+        for draft in ('ping host >results', 'ping host | cat', 'ping host; echo ok'):
+            s.set_draft(draft)
+            self.assertEqual(s.stage, 'draft', draft)
+            self.assertEqual(s.command, 'ping')
+            self.assertFalse(s.insert_entry(entry(s, 'ping -q')))
+            self.assertEqual(s.draft, draft)
+        s.set_draft('unmatched-command | cat')
+        self.assertEqual(s.stage, 'choose')
+
+    def test_fixed_recipe_operands_are_inserted_from_reference_and_not_duplicated(self):
+        commands = {'kubectl': {'command_group': True, 'flags': {'-n': 'value'}},
+                    'kubectl get': {'description': 'Display resources.', 'flags': {'-o': 'value'}}}
+        catalog = Catalog({'commands': commands})
+        meta = build_metadata(commands, {'recipes': [{'id': 'pods', 'command': 'kubectl get',
+            'description': 'Display pods.', 'effect': 'get', 'positionals': ['pods'],
+            'options': [{'flag': '-o', 'values': ['wide']}]}]})
+        s = SearchSession(SearchIndex(catalog, meta), catalog, 'display')
+        s.freeze()
+        s.set_draft('kubectl -n test get ')
+        recipe = next(e for e in s.reference if e.id == 'recipe:pods')
+        self.assertTrue(s.insert_entry(recipe))
+        self.assertEqual(s.draft, 'kubectl -n test get pods -o wide ')
+        self.assertTrue(s.insert_entry(recipe))
+        self.assertEqual(s.draft, 'kubectl -n test get pods -o wide ')
+        s.set_draft('kubectl get services ')
+        self.assertFalse(s.insert_entry(recipe))
+        self.assertEqual(s.draft, 'kubectl get services ')
+        self.assertIn('pods', s.message)
+
+    def test_version_value_is_guided_instead_of_treated_as_a_display_switch(self):
+        commands = {'pkgbuild': {'description': 'Create a package.', 'flags': {'--version': 'value'},
+                                 'flag_hints': {'--version': 'Package version'},
+                                 'flag_descriptions': {'--version': 'Specify the version of the package.'}}}
+        catalog = Catalog({'commands': commands})
+        s = SearchSession(SearchIndex(catalog, build_metadata(commands, {})), catalog, 'package')
+        target = next(e for e in s.live.results if e.entry.options).entry
+        s.freeze(target)
+        self.assertEqual(s.draft, 'pkgbuild --version ')
+        self.assertEqual(s.pending_hint, 'Package version')
 
 
 if __name__ == '__main__':

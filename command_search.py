@@ -112,6 +112,9 @@ def _colors():
 
 
 def _edit(screen, session, query_cursor):
+    # Read Ctrl+C as a key: terminal SIGINT handling can flush/cancel an
+    # in-progress curses update before Python receives the cancellation.
+    curses.raw()
     curses.set_escdelay(50)
     color = _colors()
     focus = 'draft'
@@ -119,8 +122,13 @@ def _edit(screen, session, query_cursor):
     first = reference_first = completion_first = 0
     hidden = False
     previous_stage = None
+    previous_command = None
     while True:
         stage = session.stage
+        if session.command != previous_command:
+            reference_selected, reference_first = None, 0
+            completion_selected, completion_first = None, 0
+            previous_command = session.command
         if stage != previous_stage:
             screen.clearok(True)
             previous_stage = stage
@@ -187,7 +195,10 @@ def _edit(screen, session, query_cursor):
                 canvas.write(row, ('> ' if number == reference_selected and focus == 'reference' else '  ') + text,
                              style | color, column, name_width - 1)
                 canvas.write(row, reason or entry.description, style, column + name_width, cell - name_width - 2)
-            canvas.write(top - 1, session.message, curses.A_DIM)
+            status = session.message
+            if session.next_steps:
+                status += (' | ' if status else '') + 'Next: ' + session.next_steps
+            canvas.write(top - 1, status, curses.A_DIM)
             canvas.write(top, '─' * max(0, width - 1), curses.A_DIM)
             if not hidden:
                 completion = session.catalog.complete(session.draft, session.cursor)
@@ -284,7 +295,7 @@ def _edit(screen, session, query_cursor):
                 reference_selected = _move(reference_selected, step, len(session.reference))
                 continue
             if enter:
-                if reference_selected is not None:
+                if reference_selected is not None and reference_selected < len(session.reference):
                     session.insert_entry(session.reference[reference_selected])
                 focus, completion_selected = 'draft', None
                 hidden = False
@@ -366,6 +377,7 @@ def main():
                 parser.error(results.error)
             for result in results.results:
                 print(f'{result.score}\t{result.entry.effect}\t{visible(result.entry.text)}\t{visible(result.entry.description)}')
+            sys.stdout.flush()
             return 0
         configure_unicode_terminal()
         result = curses.wrapper(edit, SearchSession(index, catalog, query), cursor)
@@ -378,6 +390,12 @@ def main():
             print(result)
     except KeyboardInterrupt:
         return 130
+    except BrokenPipeError:
+        # A normal UNIX consumer (for example head) may stop reading early.
+        # Redirect the descriptor so interpreter shutdown cannot retry the flush.
+        with open(os.devnull, 'wb') as sink:
+            os.dup2(sink.fileno(), sys.stdout.fileno())
+        return 0
     except (OSError, ValueError, sqlite3.Error, curses.error) as error:
         parser.exit(1, f'command-search: {error}\n')
     finally:

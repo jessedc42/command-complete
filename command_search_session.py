@@ -4,7 +4,9 @@ from copy import copy
 from dataclasses import dataclass
 import shlex
 
-from command_complete import following_options, read_options, split_at_cursor
+from command_complete import SHELL_WORD, following_options, read_options, split_at_cursor
+from command_search_index import entry_text
+from search_metadata import information_option
 
 
 @dataclass
@@ -14,6 +16,26 @@ class PendingValue:
     number: int
     start: int
     prefix: str
+
+
+@dataclass
+class DraftState:
+    active: set[str]
+    pending: str | None
+    positionals: list[str]
+    options_enabled: bool
+
+
+def primary_command(line):
+    """Keep shell suffixes inert, and locate the first command's supported text."""
+    end = 0
+    for token in SHELL_WORD.finditer(line):
+        if line[end:token.start()].strip() or token.group().startswith('#'):
+            return line[:end] + ' ', True
+        end = token.end()
+    if line[end:].strip():
+        return line[:end] + ' ', True
+    return line, False
 
 
 class SearchSession:
@@ -36,6 +58,11 @@ class SearchSession:
     @property
     def pending_hint(self):
         return self.pending.labels[self.pending.number] if self.pending else None
+
+    @property
+    def next_steps(self):
+        labels = self.pending.labels[self.pending.number + 1:] if self.pending else ()
+        return ' '.join([*(f'<{label}>' for label in labels), entry_text('', self.queue).strip()]).strip()
 
     def set_query(self, query):
         self.query = query
@@ -63,6 +90,7 @@ class SearchSession:
         return True
 
     def _command_for(self, line):
+        line, _ = primary_command(line)
         split = split_at_cursor(line, len(line))
         if split is None:
             return None
@@ -102,29 +130,35 @@ class SearchSession:
         group = raw.get('command_group') or (base and base.group)
         canonical = self.index.resolve(command)
         active = set(following_options(line, self.catalog.flags(canonical.split()[0], canonical), raw.get('short_options')))
-        if group and not active.intersection(('--help', '--version', '-help', '-h')):
+        if group and not any(information_option(flag, self.catalog.flags(canonical.split()[0], canonical).get(flag),
+                                               raw.get('flag_descriptions', {}).get(flag, ''), canonical.split()[0])
+                             for flag in active):
             self.stage, self.command = 'choose', None
             return
         if command != self.command:
             self.command = command
             self.reference = self._reference_for(command)
-            if line.strip() == command and command in self.drafts:
+            if command in self.drafts and (line.strip() == command or line == self.drafts[command][0]):
                 self.draft, self.cursor, self.pending, self.queue = self.drafts[command]
                 self.pending, self.queue = copy(self.pending), list(self.queue)
+            elif command in self.drafts:
+                saved_pending = self.drafts[command][2]
+                if saved_pending and line.startswith(saved_pending.prefix):
+                    self.pending = copy(saved_pending)
+                    self.queue = list(self.drafts[command][3])
         self.stage = 'draft'
         self.message = ''
 
     def choose(self, entry):
         self.pending, self.queue = None, []
-        helper = next((option.flag for option in entry.options if option.flag in ('--help', '--version', '-help', '-h')), None)
+        helper = next((option.flag for option in entry.options
+                       if option.flag in ('--help', '--version', '-help', '-h')
+                       and not option.arguments and not option.values), None)
         self.set_draft(entry.command + (' ' + helper if helper else '') + ' ')
         if self.stage != 'draft':
             self.message = 'Choose a runnable subcommand for this command group.'
             return False
-        if entry.positionals and not self.draft[len(entry.command):].strip():
-            self.draft += ' '.join(shlex.quote(value) for value in entry.positionals) + ' '
-            self.cursor = len(self.draft)
-        return self.insert_entry(entry) if entry.options else True
+        return self.insert_entry(entry) if entry.options or entry.positionals else True
 
     def _scope(self):
         canonical = self.index.resolve(self.command)
@@ -137,39 +171,74 @@ class SearchSession:
                 raw = dict(raw, repeatable_flags=repeated)
         return raw, flags
 
-    def _existing(self):
-        """Return active option names and a flag whose required value is missing."""
+    def _draft_state(self):
+        """Scan the primary command without confusing option values with operands."""
         raw, flags = self._scope()
-        active = set(following_options(self.draft, flags, raw.get('short_options')))
+        primary, _ = primary_command(self.draft)
+        active = set(following_options(primary, flags, raw.get('short_options')))
         try:
-            words = shlex.split(self.draft)
+            words = shlex.split(primary)
         except ValueError:
-            return active, 'the unfinished quoted argument'
+            return DraftState(active, 'the unfinished quoted argument', [], True)
+        command_parts = self.command.split()
+        positionals = []
+        options_enabled = True
         pending = None
         remaining = 0
+        consumed = 0
         for word in words:
             if pending:
-                if remaining:
+                kind = flags[pending]
+                if ((kind == 'many' and consumed or kind == 'optional') and word.startswith('-')):
+                    pending = None
+                else:
+                    consumed += 1
                     remaining -= 1
-                    if not remaining:
+                    if remaining <= 0 and kind != 'many':
                         pending = None
                     continue
-            if word == '--':
-                break
-            if word.startswith('-') and word != '-':
+            if options_enabled and word == '--':
+                options_enabled = False
+                continue
+            if options_enabled and word.startswith('-') and word != '-':
                 names, attached = read_options(word, flags, raw.get('short_options'))
                 flag = names[-1]
-                if flags.get(flag) in ('value', 'many', 'attached') and not attached:
+                if flags.get(flag) in ('value', 'many', 'attached', 'optional') and not attached:
                     labels = raw.get('flag_arguments', {}).get(flag, ['Value'])
                     remaining = max(1, sum(not label.endswith(' (optional)') for label in labels))
                     pending = flag
-        return active, pending
+                    consumed = 0
+                continue
+            if command_parts and word == command_parts[0]:
+                command_parts.pop(0)
+            else:
+                positionals.append(word)
+        if pending and (flags[pending] == 'many' and consumed or flags[pending] == 'optional'):
+            pending = None
+        return DraftState(active, pending, positionals, options_enabled)
+
+    def _existing(self):
+        state = self._draft_state()
+        return state.active, state.pending
+
+    def _separate(self):
+        split = split_at_cursor(self.draft, len(self.draft))
+        if self.draft and (split is None or split[1] != len(self.draft)):
+            self.draft += ' '
 
     def unavailable_reason(self, entry):
         if entry.command != self.command:
             return 'Select this command from the full frozen results.'
+        if primary_command(self.draft)[1]:
+            return 'Edit shell operators manually; reference options apply to a single command.'
         raw, _ = self._scope()
-        active, pending = self._existing()
+        state = self._draft_state()
+        active, pending = state.active, state.pending
+        if not state.options_enabled and entry.options:
+            return 'Options cannot be appended after --. Edit the draft to place them before --.'
+        if (entry.positionals and state.positionals and
+                tuple(state.positionals[:len(entry.positionals)]) != entry.positionals):
+            return 'Requires positional arguments: ' + ' '.join(entry.positionals) + '; edit the existing arguments first.'
         proposed = {o.flag for o in entry.options}
         for left, right in raw.get('flag_conflicts', ()):
             if proposed.intersection(left) and (active | proposed).intersection(right):
@@ -185,6 +254,10 @@ class SearchSession:
         if reason:
             self.message = reason
             return False
+        if entry.positionals and not self._draft_state().positionals:
+            self._separate()
+            self.draft += ' '.join(shlex.quote(value) for value in entry.positionals) + ' '
+            self.cursor = len(self.draft)
         self.queue = list(entry.options)
         return self._advance()
 
@@ -204,8 +277,7 @@ class SearchSession:
                 self.message = option.flag + ' is unavailable for this platform or command.'
                 self.queue = []
                 return False
-            if self.draft and not self.draft.endswith(' '):
-                self.draft += ' '
+            self._separate()
             self.draft += option.flag + ' '
             if option.values:
                 self.draft += ' '.join(shlex.quote(value) for value in option.values) + ' '
@@ -223,7 +295,7 @@ class SearchSession:
         if self.pending is None:
             return False
         try:
-            values = shlex.split(self.draft[self.pending.start:].strip())
+            values = shlex.split(self.draft[self.pending.start:])
         except ValueError:
             self.message = 'Close the quoted value before confirming.'
             return False
@@ -234,7 +306,7 @@ class SearchSession:
         if len(values) > 1 and flags.get(self.pending.flag) != 'many':
             self.message = 'Quote a value containing spaces before confirming.'
             return False
-        self.draft = self.draft.rstrip() + ' '
+        self._separate()
         self.cursor = len(self.draft)
         self.pending.number += 1
         if self.pending.number < len(self.pending.labels):

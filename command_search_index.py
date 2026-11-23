@@ -10,7 +10,7 @@ import hashlib
 from pathlib import Path
 import sqlite3
 
-from search_metadata import purpose_terms, tokens
+from search_metadata import information_option, purpose_terms, tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +110,7 @@ def iter_entries(catalog, metadata):
             flag_terms = frozenset(terms.union(tokens(flag), flag_meta.get('terms', purpose_terms(prose or ''))))
             # A global formatting flag does not change an operation's effect.
             flag_effect = flag_meta.get('effect', effect) if flag in raw.get('flags', {}) else effect
-            if flag in ('--help', '--version'):
+            if information_option(flag, kind, prose or '', root):
                 flag_effect = 'get'
             yield (SearchEntry(command + '\t' + flag, command, text,
                 prose or 'Description unavailable', flag_effect, flag_terms, (option,), source=flag_meta.get('source', source)))
@@ -337,13 +337,19 @@ class DatabaseSearchIndex:
         self.connection.execute(f'CREATE TEMP TABLE {table} (position INTEGER PRIMARY KEY,entry_id INTEGER,score INTEGER)')
         parameters = []
         if keywords:
+            # Materialize keyword hits in bounded batches: SQLite limits the
+            # number of SELECT arms, independently of its parameter limit.
+            hits = f'hits_{self.serial}'
+            self.connection.execute(f'CREATE TEMP TABLE {hits} (entry_id INTEGER, keyword INTEGER)')
             pieces = []
             for number, word in enumerate(keywords):
                 pieces.append('SELECT DISTINCT m.entry_id,? AS keyword FROM terms t '
                               'JOIN members m ON m.group_id=t.group_id WHERE t.term>=? AND t.term<?')
                 parameters.extend((number, word, word + '\U0010ffff'))
-            sql = ('SELECT e.id,count(*) AS score FROM (' + ' UNION ALL '.join(pieces) +
-                   ') hits JOIN entries e ON e.id=hits.entry_id')
+                if len(pieces) == 64 or number == len(keywords) - 1:
+                    self.connection.execute(f'INSERT INTO {hits} ' + ' UNION ALL '.join(pieces), parameters)
+                    pieces, parameters = [], []
+            sql = (f'SELECT e.id,count(*) AS score FROM {hits} hits JOIN entries e ON e.id=hits.entry_id')
             if filters:
                 sql += ' WHERE e.effect=?'
                 parameters.append(next(iter(filters)))
@@ -352,4 +358,6 @@ class DatabaseSearchIndex:
             sql = 'SELECT id,0 FROM entries WHERE effect=? ORDER BY sort_key,stable_id'
             parameters.append(next(iter(filters)))
         cursor = self.connection.execute(f'INSERT INTO {table}(entry_id,score) ' + sql, parameters)
+        if keywords:
+            self.connection.execute(f'DROP TABLE {hits}')
         return SearchResults(_DatabaseResults(self, table, cursor.rowcount))

@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+import subprocess
 
 import search_metadata as metadata
 from build_catalog import flag_descriptions
@@ -130,6 +132,71 @@ class MetadataImportTests(unittest.TestCase):
         commands['aws example get-data']['description'] = first
         second = metadata.build_metadata(commands, {})['commands']['aws example get-data']['description']
         self.assertEqual(first, second)
+
+    def test_version_and_dry_run_effects_follow_the_documented_form(self):
+        commands = {'pkgbuild': {'description': 'Create a package.', 'flags': {'--version': 'value'},
+                                 'flag_descriptions': {'--version': 'Specify a version for the package.'}},
+                    'aws ec2 terminate-instances': {'description': 'Terminates the instances.',
+                        'flags': {'--dry-run': 'switch', '--no-dry-run': 'switch'},
+                        'flag_descriptions': {'--dry-run': 'Checks permissions without actually making the request.'}},
+                    'kubectl apply': {'description': 'Change resources.', 'flags': {'--dry-run': 'value'},
+                        'flag_descriptions': {'--dry-run': 'Must be none, server, or client.'}}}
+        data = metadata.build_metadata(commands, {})['commands']
+        self.assertEqual(data['pkgbuild']['flags']['--version']['effect'], 'set')
+        self.assertEqual(data['aws ec2 terminate-instances']['flags']['--dry-run']['effect'], 'get')
+        self.assertEqual(data['aws ec2 terminate-instances']['flags']['--no-dry-run']['effect'], 'set')
+        self.assertEqual(data['kubectl apply']['flags']['--dry-run']['effect'], 'depends')
+
+    def test_manual_inline_prose_and_attached_headings_supply_real_descriptions(self):
+        text = ('NAME\n tool - test compiler\n\nSYNOPSIS\n tool [-Bprefix] [--dry-run]\n\n'
+                'DESCRIPTION\n       With --dry-run option, report what branches would be pruned, but do\n'
+                '       not actually prune them.\n\nOPTIONS\n   -special\n       A shallow entry.\n\n'
+                '       -Bprefix\n           Specify where to find compiler executables.\n\n'
+                '       -fcolor[=WHEN]\n       -fno-color\n           Use color in diagnostics.\n\n'
+                'EXAMPLES\n       tool --unused\n')
+        result = flag_descriptions(text, dict.fromkeys(['--dry-run', '-B', '-special', '-fcolor', '-fno-color', '--unused']))
+        self.assertIn('not actually prune', result.get('--dry-run', ''))
+        self.assertEqual(result.get('-B'), 'Specify where to find compiler executables.')
+        self.assertEqual(result.get('-fcolor'), 'Use color in diagnostics.')
+        self.assertNotIn('--unused', result)
+
+    def test_gap_report_distinguishes_an_unread_source_and_an_extraction_gap(self):
+        data = metadata.build_metadata({'private': {}, 'tool': {'description': 'Show network information.',
+            'documentation_source': 'man:tool', 'flags': {'--missing': 'unknown'}}}, {})
+        gaps = data['report']['missing_descriptions']
+        private = next(g for g in gaps if g['command'] == 'private')
+        known = next(g for g in gaps if g['command'] == 'tool')
+        self.assertNotEqual(private['reason'], known['reason'])
+        self.assertIn('available', known['reason'])
+        self.assertGreater(data['report']['term_enrichment']['commands'], 0)
+
+    def test_an_unrequested_alias_header_does_not_hide_the_requested_prose(self):
+        text = 'OPTIONS\n       -Bprefix\n       --prefix prefix\n           Find compiler executables and libraries.\n'
+        self.assertEqual(flag_descriptions(text, {'-B': 'unknown'}).get('-B'),
+                         'Find compiler executables and libraries.')
+
+    def test_unread_manual_is_reported_as_unread(self):
+        from build_catalog import add_manuals
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / 'man1'
+            directory.mkdir()
+            (directory / 'tool.1').write_text('.TH TOOL 1\n')
+            def capture(executable, *args):
+                if executable == 'manpath':
+                    return tmp
+                raise subprocess.CalledProcessError(1, [executable])
+            commands = {'tool': {'flags': {'-x': 'unknown'}}}
+            with patch('build_catalog.shutil.which', side_effect=lambda name: name), patch('build_catalog.capture', side_effect=capture):
+                add_manuals(commands)
+            data = metadata.build_metadata(commands, {})
+            self.assertTrue(all('could not be read' in gap['reason'] for gap in data['report']['missing_descriptions']))
+
+    def test_an_option_spelling_is_not_counted_as_a_purpose_description(self):
+        data = metadata.build_metadata({'compiler': {'flags': {'-fcolor': 'unknown'},
+             'documentation_source': 'man:compiler', 'flag_descriptions': {'-fcolor': '-fcolor=always'}}}, {})
+        self.assertEqual(data['commands']['compiler']['flags']['-fcolor']['description'], '')
+        self.assertEqual(data['report']['flags_described'], 0)
+        self.assertTrue(any('spelling' in gap['reason'] for gap in data['report']['missing_descriptions']))
 
 
 if __name__ == '__main__':

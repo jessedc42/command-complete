@@ -194,12 +194,25 @@ def flag_descriptions(content, flags):
     body = []
     heading_indent = 0
     entry_indent = None
+    section = ''
+    excluded = {'NAME', 'SYNOPSIS', 'USAGE', 'EXAMPLES', 'EXAMPLE', 'SEE ALSO', 'HISTORY', 'AUTHORS', 'COPYRIGHT'}
+
+    def option_names(signature):
+        names = []
+        for token in re.findall(r"--?[\w][\w-]*|-[^\w\s,-]", signature):
+            if token in flags:
+                names.append(token)
+            elif re.fullmatch(r'-[A-Z][a-z]+', token) and token[:2] in flags:
+                # GCC and other manuals attach a metavariable: -Bprefix, -Idir.
+                names.append(token[:2])
+        return names
 
     def finish():
         if body:
             summary = brief_description(" ".join(body))
-            for flag in current:
-                descriptions.setdefault(flag, summary)
+            if not summary.startswith('-'):
+                for flag in current:
+                    descriptions.setdefault(flag, summary)
 
     for line in content.splitlines():
         stripped = line.lstrip()
@@ -207,6 +220,9 @@ def flag_descriptions(content, flags):
         if stripped and not indent and (stripped.isupper() or stripped.endswith(':')):
             finish()
             current, body, entry_indent = [], [], None
+            section = stripped.rstrip(':').upper()
+            continue
+        if section in excluded:
             continue
         if not stripped:
             if body:
@@ -216,7 +232,7 @@ def flag_descriptions(content, flags):
         names = []
         description = ""
         normalized = stripped.lstrip('"`')
-        if indent and normalized.startswith("-") and (entry_indent is None or indent <= entry_indent):
+        if indent and normalized.startswith("-") and (not current or not body or indent <= heading_indent):
             signature, *inline = re.split(r"\s{2,}", normalized, maxsplit=1)
             if not inline:
                 prose = re.search(r'\s+(?=(?:Add|Allow|Be|By|Change|Compile|Control|Create|Disable|Display|Do|Emit|Enable|Exit|'
@@ -226,9 +242,12 @@ def flag_descriptions(content, flags):
                 if prose:
                     inline = [signature[prose.end():]]
                     signature = signature[:prose.start()]
-            names = [flag for flag in re.findall(r"--?[\w][\w-]*|-[^\w\s,-]", signature) if flag in flags]
+            names = option_names(signature)
             if inline:
                 description = inline[0]
+            elif current and not body and not names and indent == heading_indent:
+                # An alias outside the requested flag set still shares this body.
+                continue
         if names:
             entry_indent = indent if entry_indent is None else min(entry_indent, indent)
             if current and not body and indent == heading_indent:
@@ -245,7 +264,49 @@ def flag_descriptions(content, flags):
             finish()
             current, body = [], []
     finish()
+    # Some manuals explain flags inside prose rather than under option headings.
+    # Keep the original paragraph, and never mine example/synopsis commands for a hint.
+    section, paragraph = '', []
+
+    def finish_paragraph():
+        text = ' '.join(paragraph)
+        option_count = len(re.findall(r'(?<!\S)--?\S+', text))
+        if (text and not text.startswith(('-', '$', '#')) and
+                not (option_count >= 3 and option_count * 2 > len(text.split()))):
+            for flag in option_names(text):
+                descriptions.setdefault(flag, brief_description(text))
+
+    for line in content.splitlines() + ['']:
+        stripped = line.strip()
+        if stripped and not line[0].isspace() and (stripped.isupper() or stripped.endswith(':')):
+            finish_paragraph()
+            paragraph = []
+            section = stripped.rstrip(':').upper()
+        elif section not in excluded:
+            if stripped:
+                paragraph.append(stripped)
+            else:
+                finish_paragraph()
+                paragraph = []
     return descriptions
+
+
+def flag_description_gaps(content, flags, descriptions):
+    """Describe source evidence without declaring an extraction miss undocumented."""
+    all_mentions, prose_mentions = set(), set()
+    section = ''
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped and not line[0].isspace() and (stripped.isupper() or stripped.endswith(':')):
+            section = stripped.rstrip(':').upper()
+        mentioned = set(re.findall(r'--?[\w][\w-]*|-[^\w\s,-]', line))
+        all_mentions.update(mentioned)
+        if section not in ('NAME', 'SYNOPSIS', 'USAGE', 'EXAMPLES', 'EXAMPLE', 'SEE ALSO', 'AUTHORS', 'COPYRIGHT'):
+            prose_mentions.update(mentioned)
+    return {flag: ('legacy catalog spelling absent from current source' if flag not in all_mentions else
+                   'only synopsis or example evidence found in source' if flag not in prose_mentions else
+                   'option reference without extracted purpose; source review required')
+            for flag in flags if flag not in descriptions}
 
 
 def usage_metadata(content, command, header="SYNOPSIS"):
@@ -373,9 +434,13 @@ def add_manuals(commands):
         for name, rendered in pool.map(read_page, pages.items()):
             command = command_from_page(name)
             entry = commands.setdefault(command, {})
+            if not rendered:
+                entry['documentation_gap'] = 'local manual could not be read; bundled metadata retained'
+                continue
             entry['description'] = manual_summary(rendered)
             entry['documentation_source'] = f'man:{name}'
             flags = manual_options(rendered)
+            documentation_flags = dict(entry.get('flags', {}), **flags)
             if flags:
                 entry["flags"] = flags
                 count += command == name and command in executable_names
@@ -388,7 +453,8 @@ def add_manuals(commands):
                 for flag, labels in entry["flag_arguments"].items():
                     flags[flag] = "optional" if labels[0].endswith(" (optional)") else "value"
                     entry.setdefault("flag_hints", {})[flag] = labels[0]
-            descriptions = flag_descriptions(rendered, flags)
+            descriptions = flag_descriptions(rendered, documentation_flags)
+            entry['flag_documentation_gaps'] = flag_description_gaps(rendered, documentation_flags, descriptions)
             if descriptions:
                 entry["flag_descriptions"] = descriptions
             if name == "ifconfig":

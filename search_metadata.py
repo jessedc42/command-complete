@@ -22,6 +22,16 @@ WRITE_VERBS = {'create', 'creates', 'delete', 'deletes', 'remove', 'removes', 'u
                'disassociate', 'disassociates', 'reboot', 'reboots', 'terminate', 'terminates'}
 
 
+def information_option(flag, kind, description='', root=''):
+    if flag in ('--help', '--generate-cli-skeleton'):
+        return True
+    if flag in ('-h', '-help') and root in ('docker', 'kubectl', 'terraform'):
+        return True
+    if flag == '--version' and kind not in ('value', 'many', 'attached', 'optional'):
+        return kind == 'switch' or bool(re.match(r'(?i)^(?:show|print|display|output)\b.*\bversion\b', description))
+    return False
+
+
 class _Text(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -298,17 +308,28 @@ def build_metadata(commands, overrides):
         if description:
             described += 1
         else:
-            missing.append({'command': name, 'reason': 'source description unavailable'})
-        for flag in raw.get('flags', {}):
+            reason = raw.get('documentation_gap') or ('no purpose description extracted from available source'
+                      if entry['source'] != 'unavailable' else 'source description unavailable')
+            missing.append({'command': name, 'reason': reason})
+        for flag, kind in raw.get('flags', {}).items():
             flags_total += 1
             rule = override.get('flags', {}).get(flag, {})
             text = clean_description(rule.get('description', raw.get('flag_descriptions', {}).get(flag, '')))
+            spelling_only = bool(re.fullmatch(r'--?\S+(?:\s+--?\S+)*', text))
+            if spelling_only:
+                text = ''
             flag_effect = rule.get('effect', effect)
             for prefix, classification in override.get('flag_prefix_effects', {}).items():
                 if flag.startswith(prefix) and text:
                     flag_effect = classification
-            if flag in ('--help', '--version', '--generate-cli-skeleton') or (flag == '-help' and name.split()[0] == 'terraform'):
+            if information_option(flag, kind, text, name.split()[0]):
                 flag_effect = 'get'
+            if flag == '--dry-run' and text and 'effect' not in rule:
+                if kind in ('value', 'optional', 'many'):
+                    flag_effect = 'depends'
+                elif (name.startswith('aws ') and kind == 'switch' and
+                      re.search(r'without (?:actually )?(?:making|sending|performing|executing)', text, re.I)):
+                    flag_effect = 'get'
             entry['flags'][flag] = {'description': text,
                 'terms': sorted(set(purpose_terms(flag + ' ' + text)).union(rule.get('terms', []))),
                 'effect': flag_effect,
@@ -316,9 +337,21 @@ def build_metadata(commands, overrides):
             if text:
                 flags_described += 1
             else:
-                missing.append({'command': name, 'flag': flag, 'reason': 'source description unavailable'})
+                reason = ('source text is an option spelling, not purpose prose' if spelling_only else
+                          raw.get('flag_documentation_gaps', {}).get(flag))
+                if not reason:
+                    reason = raw.get('documentation_gap') or ('no option-purpose text extracted from available source'
+                              if entry['source'] != 'unavailable' else 'source description unavailable')
+                missing.append({'command': name, 'flag': flag, 'reason': reason})
         result['commands'][name] = entry
+    term_counts = {'commands': 0, 'flags': 0, 'curated_commands': 0, 'curated_flags': 0}
+    for name, entry in result['commands'].items():
+        term_counts['commands'] += bool(set(entry['terms']) - tokens(name))
+        term_counts['curated_commands'] += bool(overrides.get('commands', {}).get(name, {}).get('terms'))
+        for flag, value in entry['flags'].items():
+            term_counts['flags'] += bool(set(value['terms']) - tokens(flag))
+            term_counts['curated_flags'] += bool(overrides.get('commands', {}).get(name, {}).get('flags', {}).get(flag, {}).get('terms'))
     result['report'] = {'commands': len(commands), 'commands_described': described,
                         'flags': flags_total, 'flags_described': flags_described,
-                        'effects': dict(effects), 'missing_descriptions': missing}
+                        'effects': dict(effects), 'missing_descriptions': missing, 'term_enrichment': term_counts}
     return result

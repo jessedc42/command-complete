@@ -98,6 +98,22 @@ class SearchTerminalTests(unittest.TestCase):
             terminal.wait_for(b'\x1b[?1049l')
             self.assertEqual(terminal.process.wait(timeout=5), 130)
 
+    def test_ctrl_c_during_repeated_redraws_always_cancels(self):
+        for _ in range(80):
+            with SearchTerminal('network') as terminal:
+                terminal.wait_for(b'LIVE SEARCH')
+                terminal.send(b'\rping ')
+                terminal.wait_for(b'LIVE COMPLETION')
+                start = len(terminal.output)
+                terminal.send(b'\x12')
+                terminal.wait_for(b'FROZEN RESULTS', start)
+                start = len(terminal.output)
+                terminal.send(b'\x12')
+                terminal.wait_for(b'LIVE SEARCH', start)
+                terminal.send(b'\x03')
+                terminal.wait_for(b'\x1b[?1049l')
+                self.assertEqual(terminal.process.wait(timeout=5), 130)
+
     def test_small_terminal_resize_keeps_cancel_working(self):
         with SearchTerminal('network') as terminal:
             terminal.wait_for(b'LIVE SEARCH')
@@ -116,6 +132,33 @@ class SearchTerminalTests(unittest.TestCase):
             terminal.wait_for(b'LIVE COMPLETION')
             terminal.send(b'example.invalid\r')
             terminal.wait_for_draft(b'ping example.invalid')
+
+    def test_switching_commands_resets_reference_selection_without_a_crash(self):
+        with SearchTerminal('network') as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'\rping ')
+            terminal.wait_for(b'LIVE COMPLETION')
+            terminal.send(b'\x1b[17~\x1bOA\x1b[17~\x15docker stop ')
+            terminal.wait_for(b'FROZEN REFERENCE - docker stop')
+            terminal.send(b'\x1b[17~\r\r')
+            terminal.wait_for_draft(b'docker stop ')
+            self.assertEqual(terminal.process.wait(timeout=5), 0)
+
+    def test_recipe_shows_the_next_required_step(self):
+        with SearchTerminal('paced') as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'\x1bOB\r')
+            terminal.wait_for(b'Next: -i')
+            terminal.send(b'\x03')
+            terminal.wait_for(b'\x1b[?1049l')
+            self.assertEqual(terminal.process.wait(timeout=5), 130)
+
+    def test_literal_pipeline_draft_can_be_returned_without_execution(self):
+        with SearchTerminal('network') as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'\rping host | cat\r')
+            terminal.wait_for_draft(b'ping host | cat')
+            self.assertEqual(terminal.process.wait(timeout=5), 0)
 
     def test_quoted_shell_syntax_is_returned_as_literal_text(self):
         with tempfile.TemporaryDirectory() as tmp:

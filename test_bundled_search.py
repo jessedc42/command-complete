@@ -5,6 +5,8 @@ from itertools import groupby
 import json
 from pathlib import Path
 import unittest
+import subprocess
+import sys
 
 from command_complete import Catalog
 from command_search import cached_database
@@ -90,6 +92,38 @@ class BundledSearchTests(unittest.TestCase):
             for command in ('command-complete', 'command-search', 'cs'):
                 self.assertTrue(command in catalog.commands, f'{platform}: missing {command}')
                 self.assertTrue(index.search('autocomplete command search').results.for_command(command), platform)
+
+    def test_a_consumer_closing_the_results_pipe_is_quiet(self):
+        process = subprocess.Popen([sys.executable, '-B', str(ROOT / 'command_search.py'), '--matches', 'get'],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.assertTrue(process.stdout.readline())
+            process.stdout.close()
+            error = process.stderr.read()
+            self.assertEqual(process.wait(timeout=5), 0, error.decode())
+            self.assertEqual(error, b'')
+        finally:
+            process.stdout.close()
+            process.stderr.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+    def test_available_inline_prose_and_documented_effect_exceptions(self):
+        for platform, catalog, index in self.platforms:
+            if 'git remote' in catalog.commands:
+                descriptions = catalog.commands['git remote'].get('flag_descriptions', {})
+                self.assertIn('not actually prune', descriptions.get('--dry-run', ''), platform)
+            forms = index.entries_for_command('aws ec2 terminate-instances')
+            effects = {e.options[0].flag: e.effect for e in forms if e.options}
+            self.assertEqual(effects['--dry-run'], 'get', platform)
+            self.assertEqual(effects['--no-dry-run'], 'set', platform)
+            if platform == 'macos':
+                form = next(e for e in index.entries_for_command('pkgbuild') if e.options and e.options[0].flag == '--version')
+                self.assertEqual(form.effect, 'set')
+                self.assertTrue(form.options[0].arguments)
+                self.assertIn('color', catalog.commands['g++-16']['flag_descriptions']['-fdiagnostics-color'].lower())
+                self.assertFalse(catalog.commands['g++-16']['flag_descriptions']['-fdiagnostics-color'].startswith('-'))
 
 
 if __name__ == '__main__':

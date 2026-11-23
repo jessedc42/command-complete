@@ -130,6 +130,27 @@ class SearchTests(unittest.TestCase):
         index = SearchIndex(catalog, meta)
         self.assertEqual([r.entry.text for r in index.search('get myshortcut').results], ['tool edit --preview'])
 
+    def test_large_keyword_queries_preserve_distinct_word_ranking(self):
+        import command_search_index as search
+        source = fixture_index()
+        query = 'net reach ' + ' '.join('unmatched' + str(i) for i in range(600))
+        expected = [(r.entry.text, r.score) for r in source.search(query).results]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'search.db'
+            search.write_database(path, source.catalog, source.metadata)
+            index = search.DatabaseSearchIndex(path, source.catalog)
+            try:
+                self.assertEqual([(r.entry.text, r.score) for r in index.search(query).results], expected)
+            finally:
+                index.close()
+
+    def test_value_taking_version_flag_stays_in_the_mutating_filter(self):
+        commands = {'pkgbuild': {'description': 'Create a package.', 'flags': {'--version': 'value'}}}
+        catalog = Catalog({'commands': commands})
+        index = SearchIndex(catalog, build_metadata(commands, {}))
+        self.assertFalse(index.search('get pkgbuild').results)
+        self.assertTrue(any(r.entry.options for r in index.search('set pkgbuild').results))
+
 
 if __name__ == '__main__':
     unittest.main()

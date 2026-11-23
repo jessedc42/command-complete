@@ -65,6 +65,8 @@ Effects describe catalog forms, not arbitrary edited shell text. For example, a 
 
 Known conflicting reference flags remain visible and dimmed with a reason; selecting one leaves the draft unchanged. Existing nonrepeatable options and their values are preserved. Guided combinations such as a limited, paced ping request each argument in order. Free-form and quoted values do not need to match the database.
 
+Manually typed redirections, pipelines, and other shell operators remain literal draft text and can be returned normally. Completion pauses for unsupported shell suffixes. Reference insertion explains why it cannot append options after an operator or an option-terminating `--`; edit those portions manually.
+
 `cs --matches` emits tab-separated score, effect, command form, and description. `--catalog` and `--database` select an alternate matching snapshot pair.
 
 ## Complete a command
@@ -131,7 +133,7 @@ The collector reads installed manuals with `man`. The Ubuntu builder imports tho
 
 The raw inventory and reference JSON files are local build inputs ignored by Git. The bundled `catalog-ubuntu.json.gz` supplies the offline Ubuntu catalog.
 
-The [search coverage audit](search-coverage.md) reports current command/flag descriptions, indexed forms, effects, timings, and remaining gaps for both platforms. Compressed `search-coverage-macos.json.gz` and `search-coverage-ubuntu.json.gz` contain individual missing records and source outcomes. Every catalog command and scoped flag is indexed, including inherited flags and entries without descriptions. Such entries remain searchable by their names and verified terms and display `Description unavailable` when needed. The older [completion audit](coverage.md) records the pre-search snapshot.
+The [search coverage audit](search-coverage.md) reports current command/flag descriptions, indexed forms, term enrichment, effects, timings, and remaining gaps for both platforms. Compressed `search-coverage-macos.json.gz` and `search-coverage-ubuntu.json.gz` contain individual missing records and source outcomes. Gap reasons distinguish missing or unread sources, extraction gaps requiring review, synopsis/example evidence, and legacy spellings absent from current sources. Every catalog command and scoped flag is indexed, including inherited flags and entries without descriptions. Such entries remain searchable by their names and verified terms and display `Description unavailable` when needed. The older [completion audit](coverage.md) records the pre-search snapshot.
 
 - The snapshot includes executable names from your macOS Bash login PATH. Standard UNIX flags come from installed manual pages where available, including documented Git, GitHub CLI, and Docker subcommands. Terraform help supplies flags for its main workflows.
 - AWS CLI v2 schemas come from the installation's autocomplete index. Operation and parameter descriptions come from its botocore reference models, global CLI data, and built-in help. This includes service operations, waiters, custom subcommands, and global flags. [AWS CLI source](https://github.com/aws/aws-cli/tree/v2)

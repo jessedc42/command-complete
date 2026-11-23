@@ -52,6 +52,8 @@ def description_section(content):
 def merge_documentation(commands, documented):
     for name in commands.keys() & documented.keys():
         target, source = commands[name], documented[name]
+        if source.get('documentation_gap'):
+            target['documentation_gap'] = source['documentation_gap']
         if source.get('description'):
             target['description'] = clean_description(source['description'])
         if source.get('documentation_source'):
@@ -76,6 +78,8 @@ def merge_documentation(commands, documented):
                 for value in source[field]:
                     if value not in target.setdefault(field, []):
                         target[field].append(value)
+        if source.get('flag_documentation_gaps'):
+            target.setdefault('flag_documentation_gaps', {}).update(source['flag_documentation_gaps'])
         for flag in target.get('flags', {}):
             if text := source.get('flag_descriptions', {}).get(flag):
                 target.setdefault('flag_descriptions', {})[flag] = clean_description(text)
@@ -94,8 +98,11 @@ def import_ubuntu_manuals(commands, reference):
             continue
         content = re.sub(r'.\x08', '', content)
         content = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', content)
+        flags = entry.get('flags', {})
+        descriptions = completion_builder.flag_descriptions(content, flags)
         source = {'description': manual_summary(content), 'documentation_source': 'Ubuntu man:' + name,
-                  'flag_descriptions': completion_builder.flag_descriptions(content, entry.get('flags', {}))}
+                  'flag_descriptions': descriptions,
+                  'flag_documentation_gaps': completion_builder.flag_description_gaps(content, flags, descriptions)}
         merge_documentation(commands, {name: source})
         count += 1
     return count
@@ -186,7 +193,7 @@ def add_builtin_descriptions(commands):
                     or (flag == '-help' and name.split()[0] == 'terraform')):
                 entry.setdefault('flag_descriptions', {}).setdefault(flag, 'Show command help and exit.')
                 entry.setdefault('flag_sources', {}).setdefault(flag, 'documented CLI help convention')
-            elif flag == '--version':
+            elif flag == '--version' and entry.get('flags', {}).get(flag) == 'switch':
                 entry.setdefault('flag_descriptions', {}).setdefault(flag, 'Show the program version and exit.')
                 entry.setdefault('flag_sources', {}).setdefault(flag, 'documented CLI version convention')
         for flag, text in entry.get('flag_descriptions', {}).items():
@@ -226,6 +233,8 @@ def build_platform(platform, data, overrides, output_dir, source_errors):
         for flag, value in meta['flags'].items():
             if value['description']:
                 commands[name].setdefault('flag_descriptions', {})[flag] = value['description']
+            else:
+                commands[name].get('flag_descriptions', {}).pop(flag, None)
     catalog_name = 'catalog.json.gz' if platform == 'macos' else 'catalog-ubuntu.json.gz'
     catalog_file = output_dir / catalog_name
     write_json(catalog_file, data)
@@ -275,6 +284,10 @@ def write_coverage(reports, output_dir):
         lines += ['', '## ' + report['platform'], '',
                   'Effect classifications: ' + ', '.join(f'{key}: {value:,}' for key, value in sorted(report['effects'].items())) + '.', '',
                   f'Detailed gaps and source outcomes: `search-coverage-{report["platform"]}.json.gz`.', '',
+                  'Term enrichment beyond command/flag names: ' +
+                  ', '.join(f'{key}: {value:,}' for key, value in report.get('term_enrichment', {}).items()) + '.', '',
+                  'Remaining gap evidence: ' + ', '.join(f'{reason}: {count:,}' for reason, count in
+                    sorted(Counter(item['reason'] for item in report['missing_descriptions']).items())) + '.', '',
                   'Measured query times (including the first visible page):', '']
         for query, measurement in report['query_measurements'].items():
             lines.append(f'- `{query}`: {measurement["milliseconds"]} ms; {measurement["matches"]:,} matches.')
@@ -332,7 +345,8 @@ def main():
                     if name.split()[0] in ('aws', 'docker', 'kubectl', 'terraform', 'rclone')})
             if platform == 'macos' and os.uname().sysname == 'Darwin':
                 print('Reading installed macOS manuals...', flush=True)
-                documented = {name: {} for name in commands if ' ' not in name}
+                documented = {name: {'flags': dict(entry.get('flags', {}))}
+                              for name, entry in commands.items() if ' ' not in name}
                 completion_builder.add_manuals(documented)
                 merge_documentation(commands, documented)
             elif platform == 'ubuntu' and args.ubuntu_reference.exists():

@@ -1,6 +1,7 @@
 # command-search (cs)
 
-Status: design for Jesse's review. Product implementation has not begun.
+Status: implemented on `codex/command-search`; integration and final release gates
+remain separate. See the [implementation review](../reviews/2026-11-22-command-search.md).
 
 ## Intent
 

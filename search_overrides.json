@@ -1,5 +1,15 @@
 {
   "commands": {
+    "pkgbuild": {
+      "effect": "set",
+      "terms": ["build", "package", "installer"],
+      "flags": {"--version": {"effect": "set"}}
+    },
+    "productbuild": {
+      "effect": "set",
+      "terms": ["build", "package", "installer"],
+      "flags": {"--version": {"effect": "set"}}
+    },
     "ping": {
       "effect": "get",
       "terms": [
