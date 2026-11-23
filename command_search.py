@@ -209,8 +209,9 @@ def _edit(screen, session, query_cursor):
                                  style | color, limit=text_column - 2)
                     canvas.write(2 + offset, result.entry.description, style, column=text_column)
                 if not results:
-                    canvas.write(3, search_status or session.live.error or 'Type task keywords, for example: get network reachable')
-                detail = search_status or session.message
+                    canvas.write(3, search_status or session.live.error or session.guard_hint or
+                                 'Type task keywords, for example: get network reachable')
+                detail = session.live.error or session.guard_hint or search_status or session.message
                 if selected is not None and selected < len(results):
                     entry = results[selected].entry
                     detail = f'[{entry.effect}] {entry.text}'
@@ -307,12 +308,13 @@ def _edit(screen, session, query_cursor):
                 selected = None
             continue
         enter = key in ('\r', '\n', curses.KEY_ENTER)
-        if stage == 'search' and session.search_pending:
+        if stage == 'search' and (session.search_pending or session.guard_waiting):
             if enter or key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, '\t', curses.KEY_BTAB):
-                actions.append(key)
-                awaiting_choice = enter
-                session.scheduler.expedite()
-                continue
+                session.expedite_search()
+                if session.search_pending:
+                    actions.append(key)
+                    awaiting_choice = enter
+                    continue
         if stage != 'draft':
             if results and key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, '\t', curses.KEY_BTAB):
                 step = -1 if key in (curses.KEY_UP, curses.KEY_BTAB) else 1
@@ -406,12 +408,20 @@ def main():
     parser.add_argument('--matches', action='store_true', help='print ranked matches and exit')
     parser.add_argument('--catalog', type=Path, help='completion catalog for this platform')
     parser.add_argument('--database', type=Path, help='prebuilt search database (.db or .db.gz)')
+    parser.add_argument('--short-query-guard', action=argparse.BooleanOptionalAction, default=None,
+                        help='hold unfinished keywords under 3 characters during automatic search '
+                             '(default: off; COMMAND_SEARCH_SHORT_QUERY_GUARD)')
     parser.add_argument('--result-fd', type=int, help=argparse.SUPPRESS)
     cursor_group = parser.add_mutually_exclusive_group()
     cursor_group.add_argument('--cursor', type=int, help=argparse.SUPPRESS)
     cursor_group.add_argument('--cursor-bytes', type=int, help=argparse.SUPPRESS)
     parser.add_argument('query', nargs='*', help='initial task keywords')
     args = parser.parse_args()
+    if args.short_query_guard is None:
+        configured = os.environ.get('COMMAND_SEARCH_SHORT_QUERY_GUARD', '0').strip().casefold()
+        if configured not in ('0', 'false', 'no', 'off', '1', 'true', 'yes', 'on'):
+            parser.error('COMMAND_SEARCH_SHORT_QUERY_GUARD must be a boolean: 1/0, true/false, yes/no, on/off')
+        args.short_query_guard = configured in ('1', 'true', 'yes', 'on')
     query = ' '.join(args.query)
     cursor = len(query) if args.cursor is None else args.cursor
     if args.cursor_bytes is not None:
@@ -442,7 +452,8 @@ def main():
             return 0
         configure_unicode_terminal()
         with HybridSearch(index.search_background) as scheduler:
-            result = curses.wrapper(edit, SearchSession(index, catalog, query, scheduler=scheduler), cursor)
+            result = curses.wrapper(edit, SearchSession(index, catalog, query, scheduler=scheduler,
+                                                       short_query_guard=args.short_query_guard), cursor)
         if result is None:
             return 130
         if args.result_fd is not None:

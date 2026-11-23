@@ -4,8 +4,8 @@ All catalog commands and scoped flags are indexed, including inherited options. 
 
 | Platform | Search forms | Command descriptions | Stored flag descriptions |
 | --- | ---: | ---: | ---: |
-| macos | 617,931 | 22,518 / 22,931 | 175,276 / 176,286 |
-| ubuntu | 665,191 | 23,012 / 23,589 | 221,200 / 222,888 |
+| macos | 617,935 | 22,518 / 22,931 | 175,278 / 176,288 |
+| ubuntu | 665,195 | 23,012 / 23,589 | 221,202 / 222,890 |
 
 ## macos
 
@@ -13,15 +13,15 @@ Effect classifications: depends: 14, get: 7,390, set: 8,674, unknown: 6,853.
 
 Detailed gaps and source outcomes: `search-coverage-macos.json.gz`.
 
-Term enrichment beyond command/flag names: commands: 21,980, flags: 171,834, curated_commands: 65, curated_flags: 1.
+Term enrichment beyond command/flag names: commands: 21,980, flags: 171,836, curated_commands: 65, curated_flags: 1.
 
 Remaining gap evidence: legacy catalog spelling absent from current source: 160, no option-purpose text extracted from available source: 135, no purpose description extracted from available source: 34, only synopsis or example evidence found in source: 448, option reference without extracted purpose; source review required: 265, source description unavailable: 379, source text is an option spelling, not purpose prose: 2.
 
 Measured query times (including the first visible page):
 
-- `network reachability dog`: 17.58 ms; 18,563 matches.
-- `get disk space`: 3.79 ms; 2,372 matches.
-- `get inspect instances`: 203.93 ms; 167,697 matches.
+- `network reachability dog`: 17.81 ms; 18,563 matches.
+- `get disk space`: 3.78 ms; 2,372 matches.
+- `get inspect instances`: 204.48 ms; 167,697 matches.
 
 Largest remaining description gaps (review the detailed report for individual entries):
 
@@ -52,15 +52,15 @@ Effect classifications: depends: 12, get: 7,416, set: 8,688, unknown: 7,473.
 
 Detailed gaps and source outcomes: `search-coverage-ubuntu.json.gz`.
 
-Term enrichment beyond command/flag names: commands: 22,506, flags: 217,582, curated_commands: 51, curated_flags: 2.
+Term enrichment beyond command/flag names: commands: 22,506, flags: 217,584, curated_commands: 51, curated_flags: 2.
 
 Remaining gap evidence: legacy catalog spelling absent from current source: 135, no option-purpose text extracted from available source: 136, no purpose description extracted from available source: 180, only synopsis or example evidence found in source: 556, option reference without extracted purpose; source review required: 698, source description unavailable: 397, source text is an option spelling, not purpose prose: 163.
 
 Measured query times (including the first visible page):
 
-- `network reachability dog`: 18.63 ms; 19,313 matches.
-- `get disk space`: 4.16 ms; 2,451 matches.
-- `get inspect instances`: 202.83 ms; 168,695 matches.
+- `network reachability dog`: 18.59 ms; 19,313 matches.
+- `get disk space`: 4.25 ms; 2,451 matches.
+- `get inspect instances`: 207.44 ms; 168,695 matches.
 
 Largest remaining description gaps (review the detailed report for individual entries):
 

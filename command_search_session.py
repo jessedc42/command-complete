@@ -38,11 +38,23 @@ def primary_command(line):
     return line, False
 
 
+def automatic_query(query):
+    """Hold a short trailing keyword; whitespace marks earlier terms complete."""
+    if query and not query[-1].isspace():
+        suffix = query.rsplit(None, 1)[-1]
+        if sum(character.isalnum() for character in suffix.casefold()) < 3:
+            return query[:-len(suffix)], True
+    return query, False
+
+
 class SearchSession:
-    def __init__(self, index, catalog, query='', scheduler=None):
+    def __init__(self, index, catalog, query='', scheduler=None, short_query_guard=False):
         self.index, self.catalog = index, catalog
         self.query = query
         self.scheduler = scheduler
+        self.short_query_guard = short_query_guard
+        self.guard_waiting = False
+        self._effective_key = tuple(query.casefold().split())
         self.live = SearchResults() if scheduler else index.search(query)
         if scheduler:
             scheduler.request(query, immediate=True)
@@ -71,6 +83,20 @@ class SearchSession:
     def search_pending(self):
         return self.scheduler is not None and self.scheduler.pending
 
+    @property
+    def guard_hint(self):
+        if not self.guard_waiting:
+            return ''
+        if self._effective_key:
+            return 'Showing completed keywords; type 3 characters or press Space/Enter.'
+        return 'Type 3 characters, or press Space/Enter to search this short keyword.'
+
+    def expedite_search(self):
+        if self.guard_waiting:
+            self.set_query(self.query, immediate=True)
+        if self.scheduler:
+            self.scheduler.expedite()
+
     def poll_search(self):
         result = self.scheduler.poll() if self.scheduler else None
         if result is None:
@@ -81,14 +107,27 @@ class SearchSession:
 
     def set_query(self, query, immediate=False):
         self.query = query
+        effective, self.guard_waiting = (automatic_query(query) if self.short_query_guard and not immediate
+                                         else (query, False))
+        key = tuple(effective.casefold().split())
+        if self.short_query_guard and key == self._effective_key and not self.live.error:
+            if immediate and self.scheduler:
+                self.scheduler.expedite()
+            self.message = ''
+            return
+        self._effective_key = key
         if self.scheduler:
-            self.scheduler.request(query, immediate=immediate)
+            self.scheduler.request(effective, immediate=immediate)
             self.live = SearchResults()
         else:
-            self.live = self.index.search(query)
+            self.live = self.index.search(effective)
         self.message = self.live.error or ''
 
     def freeze(self, entry=None):
+        if self.guard_waiting:
+            self.expedite_search()
+            self.message = 'Submitting the full current query before choosing.'
+            return False
         if self.search_pending:
             self.scheduler.expedite()
             self.message = 'Waiting for the current search before choosing.'

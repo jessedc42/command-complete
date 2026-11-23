@@ -7,7 +7,7 @@ Find a UNIX command by what you want to do, then draft it with live autocomplete
 
 ## Versioning
 
-The current version is 0.3.0. Both entry points read `version.py`. Run `command-complete --version` or `cs --version` to check. Releases use annotated Git tags such as `v0.3.0`. See the [v0.3.0 release notes](releases/v0.3.0.md).
+The current version is 0.4.0. Both entry points read `version.py`. Run `command-complete --version` or `cs --version` to check. Releases use annotated Git tags such as `v0.4.0`. See the [v0.4.0 release notes](releases/v0.4.0.md).
 
 During 0.x development, feature additions and breaking changes increase the minor version. Backward-compatible bug fixes increase the patch version. Version 1.0.0 will establish a stable command-line interface.
 
@@ -41,6 +41,28 @@ cs --matches get disk space
 ```
 
 Results update after a **250 ms pause in typing**; **Space** requests an immediate search. Searching runs in the background so you can keep editing or cancel while a broad query is running. Waiting/searching status appears while current results are being prepared. Outdated results are discarded. Arrow navigation and Enter also request the current query immediately; a pending choice is applied when its results arrive. Initial keywords supplied at launch search immediately. `--matches` continues to run directly without an idle delay.
+
+### Optional short-query guard
+
+The guard is **off by default**. Enable it for an interactive session:
+
+```bash
+cs --short-query-guard
+```
+
+With the guard on, automatic edits hold the final unfinished keyword until it has at least three searchable characters. Alphanumeric characters count across punctuation: `ci/cd` has four, while `n--` has one. This also applies when backspacing. Earlier whitespace-completed keywords remain active: `network i` shows results for `network` and a hint that the short suffix is held. Changing only that held suffix does not repeatedly run the completed-word query.
+
+**Space, Enter, or result navigation** explicitly submits the full current query, including short terms such as `ip`. Initial keywords supplied when opening cs and direct `--matches` searches are explicit queries and remain available at any length. The guard changes automatic interactive updates, not matching or ranking rules.
+
+For the shell hotkey as well as standalone cs:
+
+```bash
+export COMMAND_SEARCH_SHORT_QUERY_GUARD=1
+```
+
+The setting is read on each launch; no binding reload is needed. `cs --no-short-query-guard` overrides an enabled environment setting for one invocation. Unset the variable to restore the default. Accepted environment values are `1/0`, `true/false`, `yes/no`, and `on/off` (case-insensitive); invalid values report a configuration error unless a CLI flag overrides them.
+
+### Matching rules
 
 Each row shows a command form and a brief purpose hint. Matching is case-insensitive and uses word prefixes: `reach` matches `reachable` and `reachability`. Ordinary keywords use inclusive OR matching, so adding `dog` does not remove ping from a network reachability search. More distinct matched query words rank first; ties sort alphabetically by command form. Repeated query words do not add score.
 

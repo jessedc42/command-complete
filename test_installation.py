@@ -25,9 +25,9 @@ class InstallationTests(unittest.TestCase):
             for _ in range(2):
                 subprocess.run([sys.executable, str(INSTALLER), '--bin-dir', tmp], check=True, capture_output=True)
             self.assertEqual(subprocess.check_output([str(Path(tmp) / 'cs'), '--version'], text=True).strip(),
-                             'command-search 0.3.0')
+                             'command-search 0.4.0')
             self.assertEqual(subprocess.check_output([str(Path(tmp) / 'command-complete'), '--version'], text=True).strip(),
-                             'command-complete 0.3.0')
+                             'command-complete 0.4.0')
 
 
 if __name__ == '__main__':

@@ -145,5 +145,106 @@ class SchedulerTests(unittest.TestCase):
                 gc.collect()
 
 
+class GuardSessionTests(unittest.TestCase):
+    def make_session(self, enabled=True):
+        index = fixture_index()
+        self.queries = []
+        original = index.search
+        def search(query):
+            self.queries.append(query)
+            return original(query)
+        index.search = search
+        return SearchSession(index, index.catalog, short_query_guard=enabled)
+
+    def test_guard_is_off_by_default(self):
+        index = fixture_index()
+        session = SearchSession(index, index.catalog)
+        session.set_query('n')
+        self.assertTrue(session.live.results)
+        self.assertFalse(session.guard_waiting)
+
+    def test_short_unfinished_keyword_is_held_after_typing_or_backspacing(self):
+        session = self.make_session()
+        for query, held in [('n', True), ('ne', True), ('net', False), ('network ', False), ('n', True)]:
+            session.set_query(query)
+            self.assertEqual(session.guard_waiting, held, query)
+            if held:
+                self.assertFalse(session.live.results)
+                self.assertIn('3', session.guard_hint)
+        self.assertNotIn('n', self.queries)
+        self.assertNotIn('ne', self.queries)
+
+    def test_completed_keywords_stay_active_without_requerying_for_short_suffixes(self):
+        session = self.make_session()
+        session.set_query('network ')
+        count = len(self.queries)
+        session.set_query('network i')
+        session.set_query('network ip')
+        self.assertEqual(len(self.queries), count)
+        self.assertEqual({r.entry.command for r in session.live.results}, {'ping', 'ipconfig', 'networksetup'})
+        self.assertTrue(session.guard_waiting)
+        self.assertIn('completed', session.guard_hint.lower())
+
+    def test_explicit_submission_includes_the_short_keyword_before_freezing(self):
+        session = self.make_session()
+        session.set_query('network i')
+        self.assertFalse(session.freeze())
+        self.assertFalse(session.guard_waiting)
+        self.assertEqual(self.queries[-1], 'network i')
+        self.assertTrue(session.freeze())
+        session.back()
+        session.set_query('ip ', immediate=True)
+        self.assertFalse(session.guard_waiting)
+        self.assertEqual(self.queries[-1], 'ip ')
+
+    def test_effect_filters_and_unicode_follow_the_same_guard_rules(self):
+        session = self.make_session()
+        session.set_query('get network i')
+        self.assertTrue(session.guard_waiting)
+        self.assertTrue(all(r.entry.effect == 'get' for r in session.live.results))
+        for query, held in [('ré', True), ('réa', False), ('n--', True), ('get', False)]:
+            session.set_query(query)
+            self.assertEqual(session.guard_waiting, held, query)
+
+    def test_searchable_characters_count_across_punctuation_and_repeated_segments(self):
+        session = self.make_session()
+        for query, held in [('ci/cd', False), ('s3.cp', False), ('a-a-a', False), ('n--', True)]:
+            session.set_query(query)
+            self.assertEqual(session.guard_waiting, held, query)
+
+    def test_guard_handles_a_long_completed_keyword_without_blocking_input(self):
+        from command_search_session import automatic_query
+        prefix = 'x' * 30000 + ' '
+        started = time.perf_counter()
+        effective, held = automatic_query(prefix + 'i')
+        elapsed = time.perf_counter() - started
+        self.assertEqual((effective, held), (prefix, True))
+        self.assertLess(elapsed, .5)
+
+    def test_backspacing_cancels_an_old_query_without_searching_the_short_suffix(self):
+        index = fixture_index()
+        started, cancelled_seen = threading.Event(), threading.Event()
+        queries = []
+        def backend(query, cancelled):
+            queries.append(query)
+            if query == 'network':
+                started.set()
+                deadline = time.monotonic() + 2
+                while not cancelled() and time.monotonic() < deadline:
+                    cancelled_seen.wait(.001)
+                cancelled_seen.set()
+            return index.search(query)
+        with HybridSearch(backend) as search:
+            session = SearchSession(index, index.catalog, 'network', scheduler=search, short_query_guard=True)
+            session.poll_search()
+            self.assertTrue(started.wait(1))
+            session.set_query('n')
+            self.assertTrue(cancelled_seen.wait(1))
+            session.poll_search()
+            self.assertTrue(session.guard_waiting)
+            self.assertFalse(session.live.results)
+            self.assertEqual(queries, ['network'])
+
+
 if __name__ == '__main__':
     unittest.main()

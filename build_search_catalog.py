@@ -211,13 +211,16 @@ def register_own_commands(commands):
     commands['command-search'] = {
         'description': 'Search UNIX commands by task keywords, then compose an unexecuted draft.',
         'documentation_source': 'project command-search CLI help', 'documented_effect': 'get',
-        'flags': common | {'--catalog': 'value', '--database': 'value'},
+        'flags': common | {'--catalog': 'value', '--database': 'value',
+                           '--short-query-guard': 'switch', '--no-short-query-guard': 'switch'},
         'arguments': ['Task keywords (optional)'], 'repeat_argument': 'Task keyword',
         'flag_hints': {'--catalog': 'Completion catalog file', '--database': 'Search database file'},
         'flag_descriptions': {'--matches': 'Print ranked search matches and exit.', '--help': 'Show command help and exit.',
                               '--version': 'Show the program version and exit.',
                               '--catalog': 'Use a specific platform completion catalog.',
-                              '--database': 'Use a specific offline search database.'}}
+                              '--database': 'Use a specific offline search database.',
+                              '--short-query-guard': 'Hold unfinished keywords under three characters during automatic search.',
+                              '--no-short-query-guard': 'Search unfinished keywords at any length (default).'}}
     commands.setdefault('cs', {'alias': 'command-search'})
 
 
@@ -226,6 +229,11 @@ def build_platform(platform, data, overrides, output_dir, source_errors):
     register_own_commands(commands)
     add_builtin_descriptions(commands)
     metadata = build_metadata(commands, overrides)
+    # Preserve audit evidence before discarding unusable source text. A later
+    # snapshot-only rebuild must not turn specific evidence into a generic gap.
+    for gap in metadata['report']['missing_descriptions']:
+        if flag := gap.get('flag'):
+            commands[gap['command']].setdefault('flag_documentation_gaps', {})[flag] = gap['reason']
     # Both utilities receive imported descriptions, including curated corrections.
     for name, meta in metadata['commands'].items():
         if meta['description']:

@@ -18,6 +18,7 @@ import termios
 import subprocess
 import time
 import unittest
+from unittest.mock import patch
 
 from command_search_index import write_database
 from test_search_session import session
@@ -56,7 +57,7 @@ class QueryInputTests(unittest.TestCase):
 
 
 class SearchTerminal(Terminal):
-    def __init__(self, query=''):
+    def __init__(self, query='', guard=None):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name)
         source = session().index
@@ -68,6 +69,8 @@ class SearchTerminal(Terminal):
         write_database(database, source.catalog, source.metadata)
         super().__init__(shell=[sys.executable, str(EDITOR), '--catalog', str(catalog),
                                 '--database', str(database), '--', query])
+        if guard is not None:
+            self.shell.insert(self.shell.index('--'), '--short-query-guard' if guard else '--no-short-query-guard')
 
     def __exit__(self, *args):
         super().__exit__(*args)
@@ -100,6 +103,67 @@ sys.exit(command_search.main())
 
 
 class SearchTerminalTests(unittest.TestCase):
+    def test_guard_is_opt_in_and_space_submits_a_short_keyword(self):
+        with SearchTerminal() as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'r')
+            terminal.wait_for(b'Test network reachability')
+            terminal.send(b'\x04')
+            terminal.wait_for(b'\x1b[?1049l')
+        with SearchTerminal(guard=True) as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'r')
+            terminal.wait_for(b'3 characters')
+            self.assertNotIn(b'Test network reachability', terminal.output)
+            terminal.send(b' ')
+            terminal.wait_for(b'Test network reachability')
+            terminal.send(b'\x04')
+            terminal.wait_for(b'\x1b[?1049l')
+
+    def test_guard_shows_completed_keywords_and_navigation_submits_the_full_query(self):
+        with SearchTerminal(guard=True) as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'network r')
+            terminal.wait_for(b'completed keywords')
+            terminal.wait_for(b'Test network reachability')
+            terminal.send(b'\x1bOB\r')
+            terminal.wait_for(b'FROZEN REFERENCE - ping')
+            terminal.send(b'example.invalid\r')
+            terminal.wait_for_draft(b'ping example.invalid')
+
+    def test_environment_enables_guard_and_cli_can_disable_it(self):
+        with patch.dict(os.environ, {'COMMAND_SEARCH_SHORT_QUERY_GUARD': 'true'}):
+            with SearchTerminal() as terminal:
+                terminal.wait_for(b'LIVE SEARCH')
+                terminal.send(b'r')
+                terminal.wait_for(b'3 characters')
+                terminal.send(b'\x04')
+                terminal.wait_for(b'\x1b[?1049l')
+            with SearchTerminal(guard=False) as terminal:
+                terminal.wait_for(b'LIVE SEARCH')
+                terminal.send(b'r')
+                terminal.wait_for(b'Test network reachability')
+                terminal.send(b'\x04')
+                terminal.wait_for(b'\x1b[?1049l')
+
+    def test_bad_guard_environment_reports_error_unless_cli_overrides_it(self):
+        fixture = SearchTerminal('reach')
+        try:
+            arguments = fixture.shell.copy()
+            arguments.insert(arguments.index('--'), '--matches')
+            for value in ('garbage', '', '   '):
+                env = dict(os.environ, COMMAND_SEARCH_SHORT_QUERY_GUARD=value)
+                result = subprocess.run(arguments, env=env, capture_output=True)
+                self.assertEqual(result.returncode, 2, repr(value))
+                self.assertIn(b'COMMAND_SEARCH_SHORT_QUERY_GUARD', result.stderr)
+                override = arguments.copy()
+                override.insert(override.index('--'), '--no-short-query-guard')
+                result = subprocess.run(override, env=env, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(b'ping', result.stdout)
+        finally:
+            fixture.directory.cleanup()
+
     def test_pasted_text_ending_in_a_partial_word_keeps_the_idle_delay(self):
         with GatedSearchTerminal(fixed_clock=True) as terminal:
             terminal.wait_for(b'LIVE SEARCH')

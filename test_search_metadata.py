@@ -4,12 +4,27 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import subprocess
+from contextlib import redirect_stdout
+import io
 
 import search_metadata as metadata
 from build_catalog import flag_descriptions
 
 
 class MetadataImportTests(unittest.TestCase):
+    def test_snapshot_rebuild_preserves_specific_missing_description_evidence(self):
+        from build_search_catalog import build_platform, read_json
+        data = {'commands': {'compiler': {'description': 'Compile source files.',
+                'flags': {'--color': 'unknown'}, 'documentation_source': 'man:compiler',
+                'flag_descriptions': {'--color': '--color=always'}}}}
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            root = Path(tmp)
+            build_platform('macos', data, {}, root, [])
+            snapshot = read_json(root / 'catalog.json.gz')
+            report = build_platform('macos', snapshot, {}, root, [])
+        reason = next(gap['reason'] for gap in report['missing_descriptions'] if gap['command'] == 'compiler')
+        self.assertEqual(reason, 'source text is an option spelling, not purpose prose')
+
     def test_html_cleanup_preserves_words_without_tags_or_control_codes(self):
         self.assertEqual(metadata.clean_description('<p>Lists <b>network</b> interfaces &amp; addresses.</p><p>Details.</p>'),
                          'Lists network interfaces & addresses.')

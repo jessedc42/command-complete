@@ -93,6 +93,16 @@ class BundledSearchTests(unittest.TestCase):
                 self.assertTrue(command in catalog.commands, f'{platform}: missing {command}')
                 self.assertTrue(index.search('autocomplete command search').results.for_command(command), platform)
 
+    def test_both_public_guard_flags_are_documented_and_completable(self):
+        for platform, catalog, index in self.platforms:
+            for command in ('command-search', 'cs'):
+                forms = {e.options[0].flag: e for e in index.entries_for_command(command) if e.options}
+                for flag in ('--short-query-guard', '--no-short-query-guard'):
+                    self.assertTrue(flag in forms, f'{platform}: {command} {flag}')
+                    self.assertNotEqual(forms[flag].description, 'Description unavailable')
+                    self.assertEqual(forms[flag].options[0].arguments, ())
+                self.assertEqual([m.text for m in catalog.matches(command + ' --short-q')], ['--short-query-guard'])
+
     def test_a_consumer_closing_the_results_pipe_is_quiet(self):
         process = subprocess.Popen([sys.executable, '-B', str(ROOT / 'command_search.py'), '--matches', 'get'],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)

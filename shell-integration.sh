@@ -46,8 +46,15 @@ elif [ -n "${BASH_VERSION-}" ] && [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
     }
     _command_complete_widget() { _command_draft_widget "$_command_complete_cli"; }
     _command_search_widget() { _command_draft_widget "$_command_search_cli"; }
+    _command_search_key_binding=${COMMAND_SEARCH_KEY_BINDING:-'\C-x\C-g'}
+    if [[ -o vi && $_command_search_key_binding == '\C-x'* ]]; then
+        # vi-insert otherwise retains self-insert as the timed-out prefix's
+        # fallback. Remove the old sequence first so re-sourcing is safe too.
+        bind -r "$_command_search_key_binding"
+        bind -r '\C-x'
+    fi
     bind -x '"\C-g":_command_complete_widget'
-    bind -x "\"${COMMAND_SEARCH_KEY_BINDING:-\C-x\C-g}\":_command_search_widget"
+    bind -x "\"$_command_search_key_binding\":_command_search_widget"
 else
     printf '%s\n' 'command-complete: use zsh or Bash 5+ for editable prompt handoff.' >&2
     return 1
