@@ -12,8 +12,10 @@ docker run --rm --platform linux/amd64 \
         set -e
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 ncurses-base
-        ln -s /work/command_complete.py /usr/local/bin/command-complete
+        python3 -B install_commands.py --bin-dir /usr/local/bin
         python3 --version
         bash --version | head -n 1
+        command-complete --version
+        cs --version
         python3 -B -m unittest -v
     '
