@@ -15,10 +15,10 @@ import shlex
 import sys
 import unicodedata
 
-from terminal_keys import edit_text
+from terminal_keys import character_cursor, configure_unicode_terminal, edit_text
+from version import __version__
 
 
-__version__ = "0.2.0"
 DATABASE = Path(__file__).resolve().with_name("catalog.json.gz")
 UBUNTU_DATABASE = DATABASE.with_name("catalog-ubuntu.json.gz")
 SHELL_WORD = re.compile(r"""(?:[^\s"'\\;&|<>()`]+|'[^']*'|"(?:[^"\\]|\\.)*"|\\.|'[^']*$|"(?:[^"\\]|\\.)*$)+""")
@@ -447,12 +447,19 @@ def main():
     parser.add_argument("--version", action="version", version=f"command-complete {__version__}")
     parser.add_argument("--matches", action="store_true",
                         help="print candidates for the draft's last word and exit")
-    parser.add_argument("--cursor", type=int, help=argparse.SUPPRESS)
+    cursor_group = parser.add_mutually_exclusive_group()
+    cursor_group.add_argument("--cursor", type=int, help=argparse.SUPPRESS)
+    cursor_group.add_argument("--cursor-bytes", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--result-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("draft", nargs="*", help="initial draft, preferably as one quoted argument")
     args = parser.parse_args()
     line = " ".join(args.draft)
     cursor = len(line) if args.cursor is None else args.cursor
+    if args.cursor_bytes is not None:
+        try:
+            cursor = character_cursor(line, args.cursor_bytes)
+        except ValueError as error:
+            parser.error(str(error))
     if not 0 <= cursor <= len(line):
         parser.error("cursor is outside the draft")
     if not args.matches and not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -468,6 +475,7 @@ def main():
             for match in catalog.matches(line):
                 print(match.text)
             return 0
+        configure_unicode_terminal()
         result = curses.wrapper(edit_draft, catalog, line, cursor)
         if result is None:
             return 130

@@ -5,10 +5,12 @@ import gzip
 import json
 from pathlib import Path
 import signal
+import shlex
 import struct
 import sys
 import tempfile
 import termios
+import subprocess
 import unittest
 
 from command_search_index import write_database
@@ -24,6 +26,7 @@ class SearchTerminal(Terminal):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name)
         source = session().index
+        source.catalog.commands['touch'] = {'description': 'Create empty files.', 'flags': {}}
         catalog = self.path / 'catalog.json.gz'
         with gzip.open(catalog, 'wt') as f:
             json.dump({'commands': source.catalog.commands}, f)
@@ -125,6 +128,74 @@ class SearchTerminalTests(unittest.TestCase):
                 terminal.send(value.encode() + b'\r')
                 terminal.wait_for_draft(('ping ' + value).encode())
                 self.assertFalse(marker.exists())
+
+    def check_shell_handoff(self, shell, cancel=False):
+        integration = EDITOR.with_name('shell-integration.sh')
+        fixture = SearchTerminal()
+        try:
+            wrapper = fixture.path / 'command-search'
+            # Remove the fixture's trailing empty query so user input remains exact.
+            wrapper.write_text('#!/bin/sh\nexec ' + shlex.join(fixture.shell[:-2]) + ' "$@"\n')
+            wrapper.chmod(0o755)
+            marker = fixture.path / 'marker-é'
+            with Terminal(shell=shell) as terminal:
+                terminal.wait_for(b'TEST> ')
+                start = len(terminal.output)
+                terminal.send((f'COMMAND_SEARCH_EXECUTABLE={shlex.quote(str(wrapper))} source '
+                               f'{shlex.quote(str(integration))}\r').encode())
+                terminal.wait_for(b'TEST> ', start)
+                terminal.send('empty café\x18\x07'.encode())
+                terminal.wait_for(b'LIVE SEARCH')
+                if cancel:
+                    terminal.send(b'\x04')
+                    terminal.wait_for(b'\x1b[?1049l')
+                    terminal.wait_for('empty café'.encode(), terminal.output.index(b'\x1b[?1049l'))
+                else:
+                    terminal.send(b'\x1bOB\r')
+                    terminal.wait_for(b'LIVE COMPLETION')
+                    argument = shlex.quote(str(marker)).encode()
+                    terminal.send(argument + b'\r')
+                    terminal.wait_for(b'\x1b[?1049l')
+                    # Readline may display UTF-8 bytes as octal escapes in locale C.
+                    # Verify the actual returned filename by editing and executing below.
+                    terminal.wait_for(b'TEST> touch ', terminal.output.index(b'\x1b[?1049l'))
+                    self.assertFalse(marker.exists())
+                    start = len(terminal.output)
+                    terminal.send(b'-edited\r')
+                    terminal.wait_for(b'TEST> ', start)
+                    self.assertTrue(marker.with_name('marker-é-edited').exists())
+                    self.assertFalse(marker.exists())
+        finally:
+            fixture.directory.cleanup()
+
+    def test_bash_hotkey_seeds_query_and_returns_unicode_draft_without_executing(self):
+        bash = '/opt/homebrew/bin/bash' if Path('/opt/homebrew/bin/bash').exists() else '/bin/bash'
+        major = subprocess.check_output([bash, '-c', 'printf "%s" "${BASH_VERSINFO[0]}"'], text=True)
+        if int(major) < 5:
+            self.skipTest('requires Bash 5+')
+        self.check_shell_handoff([bash, '--noprofile', '--norc', '-i'])
+
+    def test_bash_byte_locale_returns_unicode_draft_with_cursor_at_end(self):
+        bash = '/opt/homebrew/bin/bash' if Path('/opt/homebrew/bin/bash').exists() else '/bin/bash'
+        major = subprocess.check_output([bash, '-c', 'printf "%s" "${BASH_VERSINFO[0]}"'], text=True)
+        if int(major) < 5:
+            self.skipTest('requires Bash 5+')
+        self.check_shell_handoff(['/usr/bin/env', 'LC_ALL=C', bash, '--noprofile', '--norc', '-i'])
+
+    def test_bash_search_cancel_restores_original_query(self):
+        bash = '/opt/homebrew/bin/bash' if Path('/opt/homebrew/bin/bash').exists() else '/bin/bash'
+        major = subprocess.check_output([bash, '-c', 'printf "%s" "${BASH_VERSINFO[0]}"'], text=True)
+        if int(major) < 5:
+            self.skipTest('requires Bash 5+')
+        self.check_shell_handoff([bash, '--noprofile', '--norc', '-i'], cancel=True)
+
+    @unittest.skipUnless(Path('/bin/zsh').exists(), 'requires zsh')
+    def test_zsh_hotkey_returns_editable_unicode_draft(self):
+        self.check_shell_handoff(['/bin/zsh', '-f', '-i'])
+
+    @unittest.skipUnless(Path('/bin/zsh').exists(), 'requires zsh')
+    def test_zsh_search_cancel_restores_original_unicode_query(self):
+        self.check_shell_handoff(['/bin/zsh', '-f', '-i'], cancel=True)
 
 
 if __name__ == '__main__':

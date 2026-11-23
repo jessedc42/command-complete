@@ -17,7 +17,7 @@ from command_complete import (Catalog, Completion, __version__, apply_match, cat
                               cell_width, draw as draw_completion, visible)
 from command_search_index import DatabaseSearchIndex
 from command_search_session import SearchSession
-from terminal_keys import edit_text
+from terminal_keys import character_cursor, configure_unicode_terminal, edit_text
 
 
 ROOT = Path(__file__).resolve().parent
@@ -335,11 +335,18 @@ def main():
     parser.add_argument('--catalog', type=Path, help='completion catalog for this platform')
     parser.add_argument('--database', type=Path, help='prebuilt search database (.db or .db.gz)')
     parser.add_argument('--result-fd', type=int, help=argparse.SUPPRESS)
-    parser.add_argument('--cursor', type=int, help=argparse.SUPPRESS)
+    cursor_group = parser.add_mutually_exclusive_group()
+    cursor_group.add_argument('--cursor', type=int, help=argparse.SUPPRESS)
+    cursor_group.add_argument('--cursor-bytes', type=int, help=argparse.SUPPRESS)
     parser.add_argument('query', nargs='*', help='initial task keywords')
     args = parser.parse_args()
     query = ' '.join(args.query)
     cursor = len(query) if args.cursor is None else args.cursor
+    if args.cursor_bytes is not None:
+        try:
+            cursor = character_cursor(query, args.cursor_bytes)
+        except ValueError as error:
+            parser.error(str(error))
     if not all(c.isprintable() for c in query) or not 0 <= cursor <= len(query):
         parser.error('the query must be one printable line with a valid cursor position')
     if not args.matches and not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -360,6 +367,7 @@ def main():
             for result in results.results:
                 print(f'{result.score}\t{result.entry.effect}\t{visible(result.entry.text)}\t{visible(result.entry.description)}')
             return 0
+        configure_unicode_terminal()
         result = curses.wrapper(edit, SearchSession(index, catalog, query), cursor)
         if result is None:
             return 130
