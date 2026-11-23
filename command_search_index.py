@@ -273,6 +273,16 @@ class _DatabaseResults(Sequence):
         for start in range(0, self.count, 256):
             yield from self._range(start, min(start + 256, self.count))
 
+    def command_paths(self):
+        return {row[0] for row in self.index.connection.execute(
+            f'SELECT DISTINCT e.command FROM {self.table} r JOIN entries e ON e.id=r.entry_id')}
+
+    def for_command(self, command):
+        self.index.connection.execute(f'CREATE INDEX IF NOT EXISTS {self.table}_entry ON {self.table}(entry_id)')
+        return tuple(_entry(payload) for payload, in self.index.connection.execute(
+            f'SELECT e.payload FROM entries e JOIN {self.table} r ON r.entry_id=e.id '
+            'WHERE e.command=? ORDER BY r.position', (command,)))
+
     def __del__(self):
         try:
             self.index.connection.execute(f'DROP TABLE IF EXISTS {self.table}')
