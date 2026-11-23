@@ -359,7 +359,7 @@ def main():
         database = args.database or ROOT / ('search-ubuntu.db.gz' if catalog_file.name == 'catalog-ubuntu.json.gz' else 'search-macos.db.gz')
         if not database.exists():
             raise ValueError('Search database missing. Run python3 build_search_catalog.py first.')
-        index = DatabaseSearchIndex(cached_database(database), catalog)
+        index = DatabaseSearchIndex(cached_database(database), catalog, catalog_file)
         if args.matches:
             results = index.search(query)
             if results.error:

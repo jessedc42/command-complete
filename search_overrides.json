@@ -1,0 +1,859 @@
+{
+  "commands": {
+    "ping": {
+      "effect": "get",
+      "terms": [
+        "icmp",
+        "network",
+        "reachability",
+        "reachable",
+        "test",
+        "probe",
+        "connectivity"
+      ]
+    },
+    "ping6": {
+      "effect": "get",
+      "terms": [
+        "icmp",
+        "ipv6",
+        "network",
+        "reachability",
+        "reachable",
+        "test"
+      ]
+    },
+    "traceroute": {
+      "effect": "get",
+      "terms": [
+        "network",
+        "path",
+        "route",
+        "hops",
+        "diagnose",
+        "trace"
+      ]
+    },
+    "traceroute6": {
+      "effect": "get",
+      "terms": [
+        "network",
+        "ipv6",
+        "path",
+        "route",
+        "hops"
+      ]
+    },
+    "df": {
+      "effect": "get",
+      "terms": [
+        "disk",
+        "space",
+        "storage",
+        "capacity",
+        "filesystem",
+        "usage"
+      ]
+    },
+    "du": {
+      "effect": "get",
+      "terms": [
+        "disk",
+        "space",
+        "storage",
+        "size",
+        "directory",
+        "usage"
+      ]
+    },
+    "ls": {
+      "effect": "get",
+      "terms": [
+        "files",
+        "directory",
+        "list",
+        "folder",
+        "permissions",
+        "size"
+      ]
+    },
+    "cat": {
+      "effect": "get",
+      "terms": [
+        "read",
+        "display",
+        "file",
+        "concatenate",
+        "combine"
+      ]
+    },
+    "head": {
+      "effect": "get",
+      "terms": [
+        "read",
+        "file",
+        "first",
+        "lines"
+      ]
+    },
+    "tail": {
+      "effect": "get",
+      "terms": [
+        "read",
+        "file",
+        "last",
+        "lines",
+        "logs",
+        "follow"
+      ]
+    },
+    "grep": {
+      "effect": "get",
+      "terms": [
+        "search",
+        "find",
+        "text",
+        "pattern",
+        "match",
+        "filter"
+      ]
+    },
+    "find": {
+      "effect": "depends",
+      "terms": [
+        "search",
+        "files",
+        "directory",
+        "locate"
+      ],
+      "flags": {
+        "-delete": {
+          "effect": "set"
+        },
+        "-print": {
+          "effect": "get"
+        },
+        "-print0": {
+          "effect": "get"
+        },
+        "-exec": {
+          "effect": "depends"
+        }
+      }
+    },
+    "ps": {
+      "effect": "get",
+      "terms": [
+        "process",
+        "processes",
+        "running",
+        "pid"
+      ]
+    },
+    "top": {
+      "effect": "depends",
+      "terms": [
+        "monitor",
+        "process",
+        "cpu",
+        "memory",
+        "load"
+      ]
+    },
+    "uptime": {
+      "effect": "get",
+      "terms": [
+        "load",
+        "running",
+        "duration",
+        "boot"
+      ]
+    },
+    "uname": {
+      "effect": "get",
+      "terms": [
+        "kernel",
+        "operating",
+        "system",
+        "architecture"
+      ]
+    },
+    "whoami": {
+      "effect": "get",
+      "terms": [
+        "user",
+        "identity",
+        "account"
+      ]
+    },
+    "id": {
+      "effect": "get",
+      "terms": [
+        "user",
+        "identity",
+        "group",
+        "uid",
+        "gid"
+      ]
+    },
+    "system_profiler": {
+      "effect": "get",
+      "terms": [
+        "hardware",
+        "software",
+        "inventory",
+        "system",
+        "configuration"
+      ]
+    },
+    "netstat": {
+      "effect": "get",
+      "terms": [
+        "network",
+        "connections",
+        "ports",
+        "sockets",
+        "routes",
+        "statistics"
+      ]
+    },
+    "ss": {
+      "effect": "get",
+      "terms": [
+        "network",
+        "connections",
+        "ports",
+        "sockets"
+      ]
+    },
+    "dig": {
+      "effect": "get",
+      "terms": [
+        "dns",
+        "lookup",
+        "domain",
+        "resolve",
+        "records"
+      ]
+    },
+    "host": {
+      "effect": "get",
+      "terms": [
+        "dns",
+        "lookup",
+        "domain",
+        "resolve"
+      ]
+    },
+    "nslookup": {
+      "effect": "get",
+      "terms": [
+        "dns",
+        "lookup",
+        "domain",
+        "resolve"
+      ]
+    },
+    "ifconfig": {
+      "effect": "depends",
+      "terms": [
+        "network",
+        "interface",
+        "address",
+        "ip",
+        "configuration"
+      ],
+      "flags": {
+        "-a": {
+          "effect": "get"
+        },
+        "-l": {
+          "effect": "get"
+        },
+        "-u": {
+          "effect": "get"
+        },
+        "-d": {
+          "effect": "get"
+        }
+      }
+    },
+    "networksetup": {
+      "effect": "depends",
+      "terms": [
+        "network",
+        "configuration",
+        "interfaces",
+        "dns",
+        "wifi"
+      ],
+      "flag_prefix_effects": {
+        "-get": "get",
+        "-list": "get",
+        "-print": "get",
+        "-set": "set",
+        "-create": "set",
+        "-delete": "set",
+        "-add": "set",
+        "-remove": "set"
+      }
+    },
+    "nc": {
+      "effect": "depends",
+      "terms": [
+        "network",
+        "connection",
+        "tcp",
+        "udp",
+        "port",
+        "netcat"
+      ],
+      "flags": {
+        "-z": {
+          "effect": "get",
+          "terms": [
+            "test",
+            "reachable",
+            "scan",
+            "ports"
+          ]
+        }
+      }
+    },
+    "netcat": {
+      "effect": "depends",
+      "terms": [
+        "network",
+        "connection",
+        "tcp",
+        "udp",
+        "port"
+      ],
+      "flags": {
+        "-z": {
+          "effect": "get",
+          "terms": [
+            "test",
+            "reachable",
+            "scan"
+          ]
+        }
+      }
+    },
+    "ssh": {
+      "effect": "depends",
+      "terms": [
+        "remote",
+        "login",
+        "secure",
+        "shell",
+        "tunnel"
+      ]
+    },
+    "awk": {
+      "effect": "depends",
+      "terms": [
+        "text",
+        "columns",
+        "fields",
+        "records",
+        "filter",
+        "program"
+      ]
+    },
+    "sed": {
+      "effect": "depends",
+      "terms": [
+        "text",
+        "replace",
+        "substitute",
+        "edit",
+        "stream"
+      ],
+      "flags": {
+        "-i": {
+          "effect": "set"
+        },
+        "-I": {
+          "effect": "set"
+        }
+      }
+    },
+    "python": {
+      "effect": "depends",
+      "terms": [
+        "program",
+        "script",
+        "interpreter"
+      ]
+    },
+    "python3": {
+      "effect": "depends",
+      "terms": [
+        "program",
+        "script",
+        "interpreter"
+      ]
+    },
+    "bash": {
+      "effect": "depends",
+      "terms": [
+        "shell",
+        "script",
+        "program"
+      ]
+    },
+    "zsh": {
+      "effect": "depends",
+      "terms": [
+        "shell",
+        "script",
+        "program"
+      ]
+    },
+    "sh": {
+      "effect": "depends",
+      "terms": [
+        "shell",
+        "script",
+        "program"
+      ]
+    },
+    "curl": {
+      "effect": "depends",
+      "terms": [
+        "http",
+        "https",
+        "request",
+        "transfer",
+        "download",
+        "url"
+      ]
+    },
+    "rm": {
+      "effect": "set",
+      "terms": [
+        "delete",
+        "remove",
+        "files",
+        "directory"
+      ]
+    },
+    "mkdir": {
+      "effect": "set",
+      "terms": [
+        "create",
+        "directory",
+        "folder"
+      ]
+    },
+    "rmdir": {
+      "effect": "set",
+      "terms": [
+        "remove",
+        "directory",
+        "folder",
+        "empty"
+      ]
+    },
+    "cp": {
+      "effect": "set",
+      "terms": [
+        "copy",
+        "files",
+        "directory"
+      ]
+    },
+    "mv": {
+      "effect": "set",
+      "terms": [
+        "move",
+        "rename",
+        "files",
+        "directory"
+      ]
+    },
+    "touch": {
+      "effect": "set",
+      "terms": [
+        "create",
+        "file",
+        "timestamp",
+        "modify"
+      ]
+    },
+    "chmod": {
+      "effect": "set",
+      "terms": [
+        "change",
+        "permissions",
+        "mode",
+        "access",
+        "file"
+      ]
+    },
+    "chown": {
+      "effect": "set",
+      "terms": [
+        "change",
+        "owner",
+        "ownership",
+        "file",
+        "group"
+      ]
+    },
+    "kill": {
+      "effect": "set",
+      "terms": [
+        "signal",
+        "stop",
+        "terminate",
+        "process"
+      ]
+    },
+    "docker logs": {
+      "effect": "get",
+      "terms": [
+        "read",
+        "view",
+        "logs",
+        "container",
+        "follow",
+        "monitor"
+      ]
+    },
+    "docker inspect": {
+      "effect": "get",
+      "terms": [
+        "inspect",
+        "container",
+        "configuration",
+        "details"
+      ]
+    },
+    "docker ps": {
+      "effect": "get",
+      "terms": [
+        "list",
+        "containers",
+        "running"
+      ]
+    },
+    "docker stop": {
+      "effect": "set",
+      "terms": [
+        "stop",
+        "containers",
+        "shutdown"
+      ]
+    },
+    "docker container stop": {
+      "effect": "set",
+      "terms": [
+        "stop",
+        "containers",
+        "shutdown"
+      ]
+    },
+    "kubectl get": {
+      "effect": "get",
+      "terms": [
+        "display",
+        "inspect",
+        "resources",
+        "kubernetes",
+        "cluster",
+        "pods",
+        "nodes",
+        "services"
+      ]
+    },
+    "kubectl describe": {
+      "effect": "get",
+      "terms": [
+        "inspect",
+        "details",
+        "resources",
+        "kubernetes",
+        "events"
+      ]
+    },
+    "kubectl logs": {
+      "effect": "get",
+      "terms": [
+        "read",
+        "view",
+        "logs",
+        "pod",
+        "container"
+      ]
+    },
+    "kubectl apply": {
+      "effect": "set",
+      "terms": [
+        "apply",
+        "configuration",
+        "manifest",
+        "deploy",
+        "kubernetes"
+      ]
+    },
+    "kubectl delete": {
+      "effect": "set",
+      "terms": [
+        "delete",
+        "remove",
+        "resources",
+        "kubernetes"
+      ]
+    },
+    "aws help": {
+      "effect": "get",
+      "description": "Show AWS CLI command and configuration documentation.",
+      "terms": [
+        "help",
+        "documentation",
+        "reference"
+      ]
+    },
+    "terraform plan": {
+      "effect": "get",
+      "terms": [
+        "terraform",
+        "infrastructure",
+        "preview",
+        "plan",
+        "changes"
+      ],
+      "flags": {
+        "-out": {
+          "effect": "set"
+        }
+      }
+    },
+    "terraform apply": {
+      "effect": "set",
+      "terms": [
+        "terraform",
+        "infrastructure",
+        "apply",
+        "deploy",
+        "provision"
+      ]
+    },
+    "terraform destroy": {
+      "effect": "set",
+      "terms": [
+        "terraform",
+        "infrastructure",
+        "destroy",
+        "remove"
+      ]
+    },
+    "terraform init": {
+      "effect": "set",
+      "terms": [
+        "terraform",
+        "initialize",
+        "providers",
+        "modules",
+        "backend"
+      ]
+    },
+    "terraform validate": {
+      "effect": "get",
+      "terms": [
+        "terraform",
+        "validate",
+        "check",
+        "configuration"
+      ]
+    },
+    "terraform show": {
+      "effect": "get",
+      "terms": [
+        "terraform",
+        "inspect",
+        "state",
+        "plan"
+      ]
+    },
+    "terraform output": {
+      "effect": "get",
+      "terms": [
+        "terraform",
+        "output",
+        "values",
+        "state"
+      ]
+    },
+    "terraform fmt": {
+      "effect": "set",
+      "terms": [
+        "terraform",
+        "format",
+        "configuration"
+      ],
+      "flags": {
+        "-check": {
+          "effect": "get"
+        },
+        "-write": {
+          "effect": "depends"
+        }
+      }
+    }
+  },
+  "recipes": [
+    {
+      "id": "ls-readable",
+      "command": "ls",
+      "description": "List file details with human-readable sizes.",
+      "effect": "get",
+      "terms": [
+        "files",
+        "size",
+        "permissions",
+        "readable"
+      ],
+      "options": [
+        {
+          "flag": "-l"
+        },
+        {
+          "flag": "-h"
+        }
+      ]
+    },
+    {
+      "id": "du-summary",
+      "command": "du",
+      "description": "Show a total directory size in human-readable units.",
+      "effect": "get",
+      "terms": [
+        "disk",
+        "space",
+        "directory",
+        "size",
+        "total"
+      ],
+      "options": [
+        {
+          "flag": "-s"
+        },
+        {
+          "flag": "-h"
+        }
+      ]
+    },
+    {
+      "id": "ping-paced",
+      "command": "ping",
+      "description": "Test reachability with a limited number of spaced ICMP probes.",
+      "effect": "get",
+      "terms": [
+        "network",
+        "reachable",
+        "test",
+        "icmp",
+        "count",
+        "interval"
+      ],
+      "options": [
+        {
+          "flag": "-c",
+          "arguments": [
+            "Probe count"
+          ]
+        },
+        {
+          "flag": "-i",
+          "arguments": [
+            "Interval in seconds"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "docker-follow-tail",
+      "command": "docker logs",
+      "description": "Follow container logs after showing a selected number of recent lines.",
+      "effect": "get",
+      "terms": [
+        "container",
+        "logs",
+        "tail",
+        "follow",
+        "monitor"
+      ],
+      "options": [
+        {
+          "flag": "--follow"
+        },
+        {
+          "flag": "--tail",
+          "arguments": [
+            "Recent line count"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "kubectl-pods-wide",
+      "command": "kubectl get",
+      "description": "List pods across namespaces with node and IP details.",
+      "effect": "get",
+      "terms": [
+        "kubernetes",
+        "pods",
+        "namespaces",
+        "nodes",
+        "ip",
+        "inspect"
+      ],
+      "positionals": [
+        "pods"
+      ],
+      "options": [
+        {
+          "flag": "--all-namespaces"
+        },
+        {
+          "flag": "-o",
+          "values": [
+            "wide"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "aws-instance-fields",
+      "command": "aws ec2 describe-instances",
+      "description": "Inspect selected EC2 instances and choose response fields with JMESPath.",
+      "effect": "get",
+      "terms": [
+        "aws",
+        "ec2",
+        "instances",
+        "inspect",
+        "filter",
+        "query",
+        "jmespath"
+      ],
+      "options": [
+        {
+          "flag": "--filters",
+          "arguments": [
+            "Instance filters"
+          ]
+        },
+        {
+          "flag": "--query",
+          "arguments": [
+            "JMESPath expression"
+          ]
+        }
+      ]
+    }
+  ]
+}

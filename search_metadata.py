@@ -13,7 +13,8 @@ STOP_WORDS = set(('a an and are as at be been being by can could do does for fro
                   'that the their then there these this those to use used using was were '
                   'when which will with you your').split())
 READ_VERBS = {'describe', 'describes', 'display', 'displays', 'list', 'lists', 'retrieve', 'retrieves',
-              'show', 'shows', 'print', 'prints', 'read', 'reads', 'inspect', 'inspects'}
+              'show', 'shows', 'print', 'prints', 'read', 'reads', 'inspect', 'inspects',
+              'fetch', 'fetches', 'report', 'reports'}
 WRITE_VERBS = {'create', 'creates', 'delete', 'deletes', 'remove', 'removes', 'update', 'updates',
                'modify', 'modifies', 'change', 'changes', 'set', 'sets', 'stop', 'stops',
                'start', 'starts', 'enable', 'enables', 'disable', 'disables', 'add', 'adds',
@@ -59,12 +60,37 @@ def tokens(text):
 
 
 def purpose_terms(text):
-    return sorted(word for word in tokens(text) - STOP_WORDS if len(word) > 1)
+    words = {word for word in tokens(text) - STOP_WORDS if len(word) > 1}
+    vocabulary = {
+        'icmp': 'network ping probe reachability reachable test connectivity',
+        'reachability': 'reachable connectivity network test',
+        'network': 'networking connectivity', 'describes': 'describe inspect details information',
+        'describe': 'inspect details information', 'display': 'show view inspect',
+        'displays': 'display show view inspect', 'lists': 'list show view inspect',
+        'retrieve': 'read fetch inspect', 'retrieves': 'read fetch inspect',
+        'deletes': 'delete remove erase', 'removes': 'remove delete',
+        'creates': 'create add', 'updates': 'update change modify',
+        'filesystem': 'filesystems storage', 'directory': 'directories folder',
+        'directories': 'directory folders', 'containers': 'container docker',
+        'container': 'containers docker', 'instances': 'instance',
+        'statistics': 'stats metrics', 'memory': 'ram', 'processes': 'process',
+    }
+    for word in tuple(words):
+        words.update(vocabulary.get(word, '').split())
+    return sorted(words)
 
 
 def cli_name(name):
     name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1-\2', name)
     return re.sub(r'([a-z0-9])([A-Z])', r'\1-\2', name).replace('_', '-').lower()
+
+
+def field_label(name):
+    label = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', name)
+    label = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', label).replace('_', ' ')
+    acronyms = {'id': 'ID', 'ids': 'IDs', 'arn': 'ARN', 'arns': 'ARNs', 'vpc': 'VPC', 'ip': 'IP',
+                'ec2': 'EC2', 'dns': 'DNS', 'ttl': 'TTL', 'url': 'URL', 'uri': 'URI', 'cpu': 'CPU'}
+    return ' '.join(acronyms.get(word.lower(), word) for word in label.split())
 
 
 def manual_summary(content):
@@ -87,6 +113,61 @@ def help_summary(content):
     return ''
 
 
+def aws_help_descriptions(content, flags):
+    """AWS man output allows inline prose and continuation at the same indent."""
+    descriptions, current, body = {}, [], []
+    section = ''
+
+    def finish():
+        text = clean_description(' '.join(body))
+        if text:
+            for flag in current:
+                descriptions[flag] = text
+
+    for line in content.splitlines():
+        if re.fullmatch(r'[A-Z][A-Z /-]*', line.strip()) and not line.startswith(' '):
+            finish()
+            current, body = [], []
+            section = line.strip()
+            continue
+        if section not in ('OPTIONS', 'GLOBAL OPTIONS'):
+            continue
+        match = re.match(r'^\s+(--[\w-]+(?:\s*[|,]\s*--[\w-]+)*)\s+\([^)]*\)(?:\s+(.*))?$', line)
+        if match:
+            finish()
+            current = [flag for flag in re.findall(r'--[\w-]+', match[1]) if flag in flags]
+            body = [match[2]] if match[2] else []
+        elif current:
+            if not line.strip() and body:
+                finish()
+                current, body = [], []
+            elif line.strip():
+                body.append(line.strip())
+    finish()
+    return descriptions
+
+
+def aws_help_positionals(content):
+    active = False
+    headers = []
+    for line in content.splitlines():
+        if line == 'OPTIONS':
+            active = True
+            continue
+        if active and line and not line[0].isspace() and line.isupper():
+            break
+        if active:
+            match = re.match(r'^( +)(--?[\w-]+|[a-z][\w-]*)\s+\([^)]*\)(.*)$', line)
+            if match:
+                headers.append((len(match[1]), match[2], match[3]))
+    if not headers:
+        return []
+    indent = min(row[0] for row in headers)
+    return [{'name': name, 'label': 'Output file' if name == 'outfile' else field_label(name).capitalize(),
+             'required': '[required]' in tail}
+            for level, name, tail in headers if level == indent and not name.startswith('-')]
+
+
 def _read_json(path):
     opener = gzip.open if path.suffix == '.gz' else open
     with opener(path, 'rt', encoding='utf-8') as source:
@@ -96,6 +177,17 @@ def _read_json(path):
 def import_aws_models(commands, model_directory):
     """Read installed AWS JSON models as data, without importing an AWS SDK."""
     count = 0
+    cli = Path(model_directory).parent.parent / 'data' / 'cli.json'
+    if cli.exists() and 'aws' in commands:
+        document = _read_json(cli)
+        commands['aws'].update(description=clean_description(document.get('description', '')),
+                               command_group=True, documentation_source='AWS CLI cli.json')
+        for name, data in document.get('options', {}).items():
+            flag = '--' + name
+            text = clean_description(data.get('help', ''))
+            if text and flag in commands['aws'].get('flags', {}):
+                commands['aws'].setdefault('flag_descriptions', {})[flag] = text
+                commands['aws'].setdefault('flag_sources', {})[flag] = 'AWS CLI cli.json'
     for service in sorted(Path(model_directory).iterdir()):
         if not service.is_dir():
             continue
@@ -127,12 +219,15 @@ def import_aws_models(commands, model_directory):
                     count += 1
                 members = shapes.get(operation.get('input', {}).get('shape'), {}).get('members', {})
                 by_flag = {cli_name(member): spec for member, spec in members.items()}
+                labels = {cli_name(member): field_label(member) for member in members}
                 for flag in entry.get('flags', {}):
                     base = flag.removeprefix('--')
                     negative = base.startswith('no-') and base[3:] in by_flag
                     member = by_flag.get(base[3:] if negative else base)
                     if member is None:
                         continue
+                    if entry['flags'][flag] in ('value', 'many', 'attached', 'optional'):
+                        entry.setdefault('flag_hints', {}).setdefault(flag, labels[base[3:] if negative else base])
                     text = clean_description(member.get('documentation') or
                                              shapes.get(member.get('shape'), {}).get('documentation', ''))
                     if text:
@@ -144,6 +239,9 @@ def import_aws_models(commands, model_directory):
                 import_operation(f'{root} {cli_name(operation_name)}', operation)
             waiters = sorted(service.glob('*/waiters-2.json*'))
             if waiters:
+                if root + ' wait' in commands:
+                    commands[root + ' wait'].update(description='Wait for a documented resource state.',
+                        command_group=True, documentation_source=source)
                 for waiter_name, waiter in _read_json(waiters[-1]).get('waiters', {}).items():
                     operation = operations.get(waiter.get('operation'), {})
                     import_operation(f'{root} wait {cli_name(waiter_name)}', operation,
@@ -167,15 +265,33 @@ def build_metadata(commands, overrides):
     effects = Counter()
     flags_total = flags_described = described = 0
     for name, raw in commands.items():
-        override = overrides.get('commands', {}).get(name, {})
-        description = clean_description(override.get('description', raw.get('description', '')))
-        effect = override.get('effect', infer_effect(description))
+        canonical = name
+        seen = set()
+        while commands[canonical].get('alias'):
+            if canonical in seen or commands[canonical]['alias'] not in commands:
+                raise ValueError(f'Invalid command alias: {name}')
+            seen.add(canonical)
+            canonical = commands[canonical]['alias']
+        documented = commands[canonical]
+        override = dict(overrides.get('commands', {}).get(canonical, {}))
+        override.update(overrides.get('commands', {}).get(name, {}))
+        prose = override.get('description', raw.get('description') or documented.get('description', ''))
+        if raw.get('documented_positionals'):
+            prose = prose.removesuffix(' Saves the response to an output file.')
+        description = clean_description(prose)
+        if any(value['name'] == 'outfile' for value in raw.get('documented_positionals', ())):
+            if 'saves the response' not in description.lower():
+                description = clean_description(description + ' Saves the response to an output file.', limit=260)
+        effect = override.get('effect', raw.get('documented_effect', documented.get('documented_effect', infer_effect(description))))
+        if (effect == 'unknown' and name.startswith('aws ') and description.lower().startswith(('returns ', 'gets '))
+                and name.split()[-1].startswith(('get-', 'list-', 'describe-', 'search-', 'lookup-', 'batch-get-'))):
+            effect = 'get'
         if effect not in ('get', 'set', 'depends', 'unknown'):
             raise ValueError(f'Invalid effect classification for {name}: {effect}')
         terms = purpose_terms(name + ' ' + description)
         terms = sorted(set(terms).union(override.get('terms', [])))
         entry = {'description': description, 'terms': terms, 'effect': effect, 'flags': {},
-                 'source': 'curated' if 'description' in override else raw.get('documentation_source', 'unavailable')}
+                 'source': 'curated' if 'description' in override else raw.get('documentation_source', documented.get('documentation_source', 'unavailable'))}
         if raw.get('command_group'):
             entry['command_group'] = True
         effects[effect] += 1
@@ -187,9 +303,15 @@ def build_metadata(commands, overrides):
             flags_total += 1
             rule = override.get('flags', {}).get(flag, {})
             text = clean_description(rule.get('description', raw.get('flag_descriptions', {}).get(flag, '')))
+            flag_effect = rule.get('effect', effect)
+            for prefix, classification in override.get('flag_prefix_effects', {}).items():
+                if flag.startswith(prefix) and text:
+                    flag_effect = classification
+            if flag in ('--help', '--version', '--generate-cli-skeleton') or (flag == '-help' and name.split()[0] == 'terraform'):
+                flag_effect = 'get'
             entry['flags'][flag] = {'description': text,
                 'terms': sorted(set(purpose_terms(flag + ' ' + text)).union(rule.get('terms', []))),
-                'effect': rule.get('effect', effect),
+                'effect': flag_effect,
                 'source': 'curated' if 'description' in rule else raw.get('flag_sources', {}).get(flag, raw.get('documentation_source', 'unavailable'))}
             if text:
                 flags_described += 1

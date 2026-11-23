@@ -1,4 +1,9 @@
 from pathlib import Path
+from contextlib import closing
+import gzip
+import hashlib
+import json
+import sqlite3
 import tempfile
 import unittest
 
@@ -53,6 +58,7 @@ class SearchTests(unittest.TestCase):
         alias = {e.text: e for e in index.entries_for_command('item-list')}
         self.assertIn('item-list --limit <Value>', alias)
         self.assertIn('item-list --region <Region>', alias)
+        self.assertEqual([m.text for m in index.catalog.matches('item-list --reg')], ['--region'])
 
     def test_recipe_components_keep_placeholders_separate_from_insertable_tokens(self):
         catalog = Catalog({'commands': {'ping': {'flags': {'-c': 'value', '-i': 'value'}}}})
@@ -82,6 +88,47 @@ class SearchTests(unittest.TestCase):
                           [e.text for e in index.entries_for_command('item-list')])
             self.assertTrue(index.search('get set').error)
             index.close()
+
+    def test_recipe_context_matches_identically_in_memory_and_prebuilt_index(self):
+        import command_search_index as search
+        catalog = Catalog({'commands': {'tool': {'description': 'Inspect network resources.', 'flags': {'-v': 'switch'}}}})
+        meta = build_metadata(catalog.commands, {'recipes': [{'id': 'verbose', 'command': 'tool',
+                              'description': 'Show extra details.', 'effect': 'get', 'options': [{'flag': '-v'}]}]})
+        expected = ['tool', 'tool -v', 'tool -v']
+        self.assertEqual([r.entry.text for r in SearchIndex(catalog, meta).search('network').results], expected)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'search.db'
+            search.write_database(path, catalog, meta)
+            index = search.DatabaseSearchIndex(path, catalog)
+            self.assertEqual([r.entry.text for r in index.search('network').results], expected)
+            index.close()
+
+    def test_stale_prebuilt_index_rejects_a_changed_completion_snapshot(self):
+        import command_search_index as search
+        source = fixture_index()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'search.db'
+            catalog_path = Path(tmp) / 'catalog.json.gz'
+            with gzip.open(catalog_path, 'wt') as f:
+                json.dump({'commands': source.catalog.commands}, f)
+            search.write_database(path, source.catalog, source.metadata)
+            digest = hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute('INSERT INTO info VALUES (?,?)', ('catalog_sha256', digest))
+                connection.commit()
+            with gzip.open(catalog_path, 'wt') as f:
+                json.dump({'commands': {'changed': {}}}, f)
+            with self.assertRaisesRegex(ValueError, 'rebuild'):
+                search.DatabaseSearchIndex(path, Catalog({'commands': {'changed': {}}}), catalog_path)
+
+    def test_alias_keeps_its_custom_terms_and_canonical_flag_effects(self):
+        catalog = Catalog({'commands': {'tool': {}, 'tool change': {'flags': {'--preview': 'switch'}},
+                                       'tool edit': {'alias': 'tool change'}}})
+        meta = build_metadata(catalog.commands, {'commands': {
+            'tool change': {'effect': 'set', 'flags': {'--preview': {'effect': 'get'}}},
+            'tool edit': {'terms': ['myshortcut']}}})
+        index = SearchIndex(catalog, meta)
+        self.assertEqual([r.entry.text for r in index.search('get myshortcut').results], ['tool edit --preview'])
 
 
 if __name__ == '__main__':

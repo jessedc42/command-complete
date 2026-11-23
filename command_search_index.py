@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 import json
+import hashlib
 from pathlib import Path
 import sqlite3
 
@@ -77,17 +78,22 @@ def resolve_command(catalog, command):
 
 def iter_entries(catalog, metadata):
     meta_commands = metadata.get('commands', {})
+    contexts = {}
     for command in catalog.commands:
         canonical = resolve_command(catalog, command)
         raw = catalog.commands[canonical]
         root = canonical.split()[0]
         root_raw = catalog.commands.get(root, {})
-        meta = meta_commands.get(canonical, {})
-        if canonical == command:
-            meta = meta_commands.get(command, meta)
+        canonical_meta = meta_commands.get(canonical, {})
+        meta = canonical_meta
+        if canonical != command:
+            alias_meta = meta_commands.get(command, {})
+            meta = dict(canonical_meta, **alias_meta)
+            meta['flags'] = canonical_meta.get('flags', {}) | alias_meta.get('flags', {})
         description = meta.get('description') or raw.get('description', '')
         effect = meta.get('effect', 'unknown')
-        terms = frozenset(tokens(command).union(meta.get('terms', purpose_terms(description))))
+        terms = frozenset(tokens(command).union(canonical_meta.get('terms', ()), meta.get('terms', purpose_terms(description))))
+        contexts[command] = terms
         source = meta.get('source', raw.get('documentation_source', 'unavailable'))
         yield (SearchEntry(command, command, command, description or 'Description unavailable',
                                    effect, terms, group=bool(meta.get('command_group', raw.get('command_group'))), source=source))
@@ -118,7 +124,7 @@ def iter_entries(catalog, metadata):
         text = entry_text(command, options, positionals)
         yield (SearchEntry('recipe:' + recipe['id'], command, text, recipe['description'],
                                    recipe.get('effect', 'unknown'),
-                                   frozenset(tokens(text).union(purpose_terms(recipe['description']), recipe.get('terms', ()))),
+                                       frozenset(contexts[command].union(tokens(text), purpose_terms(recipe['description']), recipe.get('terms', ()))),
                                    options, positionals, source='curated'))
 
 
@@ -222,7 +228,7 @@ def write_database(path, catalog, metadata):
                 if group_id is None:
                     group_id = len(groups)
                     groups[normalized] = group_id
-                    connection.executemany('INSERT INTO terms VALUES (?,?)', ((term, group_id) for term in normalized))
+                    connection.executemany('INSERT INTO terms VALUES (?,?)', ((term, group_id) for term in sorted(normalized)))
                 connection.execute('INSERT OR IGNORE INTO members VALUES (?,?)', (group_id, number))
         connection.executescript('''
             CREATE INDEX entry_command ON entries(command,sort_key,stable_id);
@@ -291,13 +297,21 @@ class _DatabaseResults(Sequence):
 
 
 class DatabaseSearchIndex:
-    def __init__(self, path, catalog):
+    def __init__(self, path, catalog, catalog_file=None):
         self.catalog = catalog
         self.connection = sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro&immutable=1', uri=True)
         self.connection.execute('PRAGMA temp_store=MEMORY')
-        if self.connection.execute("SELECT value FROM info WHERE key='format'").fetchone() != ('1',):
+        try:
+            if self.connection.execute("SELECT value FROM info WHERE key='format'").fetchone() != ('1',):
+                raise ValueError('Unsupported search database format; rebuild the search catalog.')
+            expected = self.connection.execute("SELECT value FROM info WHERE key='catalog_sha256'").fetchone()
+            if expected and catalog_file is not None:
+                actual = hashlib.sha256(Path(catalog_file).read_bytes()).hexdigest()
+                if actual != expected[0]:
+                    raise ValueError('Completion catalog changed; rebuild the search catalog before searching.')
+        except (ValueError, OSError, sqlite3.Error):
             self.close()
-            raise ValueError('Unsupported search database format; rebuild the search catalog.')
+            raise
         self.serial = 0
 
     def close(self):

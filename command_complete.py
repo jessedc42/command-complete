@@ -102,7 +102,7 @@ class Catalog:
         candidates, hint, command, examples = self.candidates(words, prefix, line[end:])
         descriptions = {}
         if command:
-            root = words[0]
+            root = command.split()[0]
             if root in ("aws", "kubectl", "docker"):
                 descriptions.update(self.commands[root].get("flag_descriptions", {}))
             descriptions.update(self.commands[command].get("flag_descriptions", {}))
@@ -120,6 +120,7 @@ class Catalog:
         if root not in self.commands:
             return [], None, None, ()
         command = self.commands[root].get("alias", root)
+        root = command.split()[0]
         flags = self.flags(root, command)
         positional = 0
         script_supplied = False

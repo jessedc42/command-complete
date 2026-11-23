@@ -1,5 +1,9 @@
 __pycache__/
 .worktrees/
+.superpowers/
+search-*.db
+search-*.building
+catalog*.building
 .DS_Store
 ubuntu-command-inventory.json
 ubuntu-command-reference.json

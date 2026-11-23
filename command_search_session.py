@@ -100,7 +100,9 @@ class SearchSession:
         raw = self.catalog.commands[self.index.resolve(command)]
         base = next((e for e in self.index.entries_for_command(command) if e.id == command), None)
         group = raw.get('command_group') or (base and base.group)
-        if group and not any(flag in line.split() for flag in ('--help', '--version')):
+        canonical = self.index.resolve(command)
+        active = set(following_options(line, self.catalog.flags(canonical.split()[0], canonical), raw.get('short_options')))
+        if group and not active.intersection(('--help', '--version', '-help', '-h')):
             self.stage, self.command = 'choose', None
             return
         if command != self.command:
@@ -114,7 +116,8 @@ class SearchSession:
 
     def choose(self, entry):
         self.pending, self.queue = None, []
-        self.set_draft(entry.command + ' ')
+        helper = next((option.flag for option in entry.options if option.flag in ('--help', '--version', '-help', '-h')), None)
+        self.set_draft(entry.command + (' ' + helper if helper else '') + ' ')
         if self.stage != 'draft':
             self.message = 'Choose a runnable subcommand for this command group.'
             return False
@@ -126,7 +129,12 @@ class SearchSession:
     def _scope(self):
         canonical = self.index.resolve(self.command)
         raw = self.catalog.commands[canonical]
-        flags = self.catalog.flags(canonical.split()[0], canonical)
+        root = canonical.split()[0]
+        flags = self.catalog.flags(root, canonical)
+        if root in ('aws', 'docker', 'kubectl'):
+            repeated = set(raw.get('repeatable_flags', ())) | set(self.catalog.commands[root].get('repeatable_flags', ()))
+            if repeated:
+                raw = dict(raw, repeatable_flags=repeated)
         return raw, flags
 
     def _existing(self):

@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 
 from command_complete import DATABASE, UBUNTU_DATABASE
+from search_metadata import help_summary, manual_summary
 
 
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*")
@@ -192,6 +193,7 @@ def flag_descriptions(content, flags):
     current = []
     body = []
     heading_indent = 0
+    entry_indent = None
 
     def finish():
         if body:
@@ -202,6 +204,10 @@ def flag_descriptions(content, flags):
     for line in content.splitlines():
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
+        if stripped and not indent and (stripped.isupper() or stripped.endswith(':')):
+            finish()
+            current, body, entry_indent = [], [], None
+            continue
         if not stripped:
             if body:
                 finish()
@@ -209,14 +215,30 @@ def flag_descriptions(content, flags):
             continue
         names = []
         description = ""
-        if indent and stripped.startswith("-"):
-            signature, *inline = re.split(r"\s{2,}", stripped, maxsplit=1)
+        normalized = stripped.lstrip('"`')
+        if indent and normalized.startswith("-") and (entry_indent is None or indent <= entry_indent):
+            signature, *inline = re.split(r"\s{2,}", normalized, maxsplit=1)
+            if not inline:
+                prose = re.search(r'\s+(?=(?:Add|Allow|Be|By|Change|Compile|Control|Create|Disable|Display|Do|Emit|Enable|Exit|'
+                                  r'Fix|Force|Generate|Help|If|Include|Interpret|Link|List|Make|Optimize|Perform|Place|'
+                                  r'Preserve|Print|Produce|Put|Read|Reduce|Remove|Report|Request|Same|Save|Search|Select|'
+                                  r'Set|Shorthands?|Show|Specify|Stop|Suppress|The|This|Treat|Turn|Use|Warn|When|Write)\b)', signature)
+                if prose:
+                    inline = [signature[prose.end():]]
+                    signature = signature[:prose.start()]
             names = [flag for flag in re.findall(r"--?[\w][\w-]*|-[^\w\s,-]", signature) if flag in flags]
             if inline:
                 description = inline[0]
         if names:
-            finish()
-            current, body, heading_indent = names, [description] if description else [], indent
+            entry_indent = indent if entry_indent is None else min(entry_indent, indent)
+            if current and not body and indent == heading_indent:
+                current = list(dict.fromkeys(current + names))
+                body = [description] if description else []
+            else:
+                finish()
+                current, body, heading_indent = names, [description] if description else [], indent
+        elif current and not body and indent == heading_indent and stripped.startswith('(') and stripped.endswith(')'):
+            current += [flag for flag in re.findall(r'--?[\w][\w-]*|-[^\w\s,-]', stripped) if flag in flags and flag not in current]
         elif current and (indent > heading_indent or line.startswith("\t")):
             body.append(stripped)
         else:
@@ -351,6 +373,8 @@ def add_manuals(commands):
         for name, rendered in pool.map(read_page, pages.items()):
             command = command_from_page(name)
             entry = commands.setdefault(command, {})
+            entry['description'] = manual_summary(rendered)
+            entry['documentation_source'] = f'man:{name}'
             flags = manual_options(rendered)
             if flags:
                 entry["flags"] = flags
@@ -481,7 +505,11 @@ def add_terraform(commands, executable):
                 name, equals = match.groups()
                 flags[name] = "value" if equals else "unknown"
         path = " ".join(("terraform", *parts))
-        commands[path] = {"flags": flags}
+        commands[path] = {"flags": flags, "description": help_summary(help_text),
+                          "flag_descriptions": flag_descriptions(help_text, flags),
+                          "documentation_source": "Terraform CLI help"}
+        if re.search(r'Usage:\s*[^\n]*(?:COMMAND|SUBCOMMAND)', help_text):
+            commands[path]['command_group'] = True
         for name in children:
             commands.setdefault(f"{path} {name}", {})
             if parts or name in allowed:
@@ -546,7 +574,14 @@ def add_docker(commands, executable):
             "flags": flags | {"--help": "switch"},
             "flag_hints": hints,
             "flag_descriptions": flag_descriptions(content, flags),
+            "description": help_summary(content),
+            "documentation_source": "Docker CLI help",
         }
+        entry['repeatable_flags'] = []
+        for short, long, _kind in re.findall(r'(?m)^ +(?:(-[A-Za-z0-9]), )?(--[\w-]+) +(list|strings|stringArray)\s', content):
+            entry['repeatable_flags'].extend(flag for flag in (short, long) if flag)
+        if re.search(r'Usage:\s*[^\n]*(?:COMMAND|SUBCOMMAND)', content):
+            entry['command_group'] = True
         apply_usage(entry, usage_metadata(content, name, "Usage:"))
         for alias in other_names:
             aliases[alias] = name
@@ -648,6 +683,14 @@ def add_kubectl(commands, executable):
         children, aliases, flags = kube_help(help_text)
         entry = commands[name] = {"flags": flags | {"-h": "switch", "--help": "switch"}}
         entry["flag_descriptions"] = flag_descriptions(help_text, entry["flags"])
+        entry["description"] = help_summary(help_text)
+        entry["documentation_source"] = "kubectl client help"
+        entry['repeatable_flags'] = []
+        for line in help_text.splitlines():
+            if (match := KUBE_FLAG.match(line)) and match[3].startswith('['):
+                entry['repeatable_flags'].extend(flag for flag in (match[1], match[2]) if flag)
+        if re.search(r"Usage:\s*[^\n]*(?:COMMAND|SUBCOMMAND)", help_text):
+            entry["command_group"] = True
         apply_usage(entry, usage_metadata(help_text, name, "Usage:"))
         if parts:
             for alias in aliases:
@@ -657,6 +700,9 @@ def add_kubectl(commands, executable):
 
     visit(())
     commands["kubectl"]["flags"].update(global_flags)
+    for line in global_help.splitlines():
+        if (match := KUBE_FLAG.match(line)) and match[3].startswith('['):
+            commands['kubectl'].setdefault('repeatable_flags', []).extend(flag for flag in (match[1], match[2]) if flag)
     commands["kubectl"]["flag_descriptions"].update(flag_descriptions(global_help, global_flags))
     commands["kubectl"]["flag_hints"] = {
         "-n": "Namespace", "--namespace": "Namespace",

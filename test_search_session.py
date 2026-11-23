@@ -12,7 +12,7 @@ def session(query='network'):
                  'flag_hints': {'-c': 'Count', '-i': 'Seconds'}, 'short_options': True},
         'nc': {'description': 'Test network connections.', 'flags': {'-l': 'switch', '-z': 'switch', '-p': 'value'},
                'flag_hints': {'-p': 'Port'}, 'flag_conflicts': [[['-l'], ['-z']]], 'short_options': True},
-        'docker': {'command_group': True, 'flags': {'--context': 'value'}},
+        'docker': {'command_group': True, 'flags': {'--context': 'value', '--help': 'switch'}},
         'docker stop': {'description': 'Stop network containers.', 'flags': {'--time': 'value'}}}
     metadata = build_metadata(commands, {'recipes': [{'id': 'ping-paced', 'command': 'ping',
         'description': 'Test network with paced probes.', 'effect': 'get', 'terms': ['paced'],
@@ -128,6 +128,26 @@ class SessionTests(unittest.TestCase):
         s.freeze()
         s.set_draft('other-command ')
         self.assertEqual(s.stage, 'choose')
+
+    def test_selecting_help_for_a_command_group_can_return_a_help_draft(self):
+        s = session('docker')
+        s.freeze(entry(s, 'docker --help'))
+        self.assertEqual(s.stage, 'draft')
+        self.assertEqual(s.draft, 'docker --help ')
+
+    def test_documented_inherited_repeatable_option_can_be_added_again(self):
+        commands = {'kubectl': {'flags': {'--as-group': 'value'}, 'command_group': True,
+                               'flag_hints': {'--as-group': 'Group'}, 'repeatable_flags': ['--as-group']},
+                    'kubectl get': {'description': 'Read network resource information.', 'flags': {}}}
+        catalog = Catalog({'commands': commands})
+        s = SearchSession(SearchIndex(catalog, build_metadata(commands, {})), catalog, 'network')
+        s.freeze()
+        s.set_draft('kubectl --as-group dev get ')
+        self.assertEqual(s.command, 'kubectl get')
+        target = next(e for e in s.index.entries_for_command('kubectl get') if e.options and e.options[0].flag == '--as-group')
+        s.insert_entry(target)
+        self.assertEqual(s.draft, 'kubectl --as-group dev get --as-group ')
+        self.assertEqual(s.pending_hint, 'Group')
 
 
 if __name__ == '__main__':
