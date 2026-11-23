@@ -28,6 +28,8 @@ Shell shortcuts require **Bash 5+ or zsh**. From the shell prompt, **Ctrl+G** op
 
 To customize the search shortcut, set `COMMAND_SEARCH_KEY_BINDING` before sourcing the integration. Use the shell's native key notation: for example, `export COMMAND_SEARCH_KEY_BINDING='\C-x\C-s'` in Bash or `export COMMAND_SEARCH_KEY_BINDING='^X^S'` in zsh. `COMMAND_COMPLETE_EXECUTABLE` and `COMMAND_SEARCH_EXECUTABLE` can override the scripts used by the widgets.
 
+In Bash vi editing mode, a configured Ctrl+X search sequence reserves that prefix so a pause between the keys does not insert a literal control character. The global Readline key timeout is unchanged. Source the integration before adding any other custom vi-mode Ctrl+X bindings.
+
 ## Search by purpose
 
 ```bash
@@ -38,7 +40,9 @@ cs get inspect instances
 cs --matches get disk space
 ```
 
-Results update while you type. Each row shows a command form and a brief purpose hint. Matching is case-insensitive and uses word prefixes: `reach` matches `reachable` and `reachability`. Ordinary keywords use inclusive OR matching, so adding `dog` does not remove ping from a network reachability search. More distinct matched query words rank first; ties sort alphabetically by command form. Repeated query words do not add score.
+Results update after a **250 ms pause in typing**; **Space** requests an immediate search. Searching runs in the background so you can keep editing or cancel while a broad query is running. Waiting/searching status appears while current results are being prepared. Outdated results are discarded. Arrow navigation and Enter also request the current query immediately; a pending choice is applied when its results arrive. Initial keywords supplied at launch search immediately. `--matches` continues to run directly without an idle delay.
+
+Each row shows a command form and a brief purpose hint. Matching is case-insensitive and uses word prefixes: `reach` matches `reachable` and `reachability`. Ordinary keywords use inclusive OR matching, so adding `dog` does not remove ping from a network reachability search. More distinct matched query words rank first; ties sort alphabetically by command form. Repeated query words do not add score.
 
 The complete words `get` and `set` are strict effect filters. `get` means an intended observation; `set` means deliberate mutation. Argument-dependent forms have `depends`, and insufficient evidence gives `unknown`; neither appears under a strict filter. `get set` is a query error. A filter alone lists matching entries alphabetically. An empty query shows instructions.
 

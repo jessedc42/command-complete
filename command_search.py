@@ -2,12 +2,14 @@
 """Discover UNIX commands by purpose, then return an unexecuted command draft."""
 
 import argparse
+from collections import deque
 import curses
 import gzip
 import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import sqlite3
 import sys
@@ -17,6 +19,7 @@ from command_complete import (Catalog, Completion, __version__, apply_match, cat
                               cell_width, draw as draw_completion, visible)
 from command_search_index import DatabaseSearchIndex
 from command_search_session import SearchSession
+from search_scheduler import HybridSearch
 from terminal_keys import character_cursor, configure_unicode_terminal, edit_text
 
 
@@ -111,6 +114,42 @@ def _colors():
     return style
 
 
+def terminal_disconnected():
+    poller = select.poll()
+    poller.register(sys.stdin.fileno(), select.POLLHUP | select.POLLERR | select.POLLNVAL)
+    return bool(poller.poll(0))
+
+
+def coalesce_query_input(screen, line, cursor, key, buffered):
+    """Apply queued printable edits in order; leave controls for the event loop."""
+    line, cursor = edit_text(line, cursor, key)
+    immediate = key == ' '
+    screen.nodelay(True)
+    try:
+        while True:
+            if buffered:
+                queued = buffered[0]
+                if not isinstance(queued, str) or not queued.isprintable():
+                    break
+                buffered.popleft()
+            else:
+                try:
+                    queued = screen.get_wch()
+                except curses.error:
+                    break
+                if not isinstance(queued, str) or not queued.isprintable():
+                    if isinstance(queued, int):
+                        curses.ungetch(queued)
+                    else:
+                        curses.unget_wch(queued)
+                    break
+            line, cursor = edit_text(line, cursor, queued)
+            immediate = queued == ' '
+    finally:
+        screen.nodelay(False)
+    return line, cursor, immediate
+
+
 def _edit(screen, session, query_cursor):
     # Read Ctrl+C as a key: terminal SIGINT handling can flush/cancel an
     # in-progress curses update before Python receives the cancellation.
@@ -123,7 +162,16 @@ def _edit(screen, session, query_cursor):
     hidden = False
     previous_stage = None
     previous_command = None
+    actions, buffered = deque(), deque()
+    awaiting_choice, dirty = False, True
+    previous_status = None
     while True:
+        if session.stage == 'search' and session.poll_search():
+            selected, first = None, 0
+            dirty = True
+        search_status = session.scheduler.status if session.scheduler and session.stage == 'search' else ''
+        if search_status != previous_status:
+            dirty, previous_status = True, search_status
         stage = session.stage
         if session.command != previous_command:
             reference_selected, reference_first = None, 0
@@ -132,97 +180,118 @@ def _edit(screen, session, query_cursor):
         if stage != previous_stage:
             screen.clearok(True)
             previous_stage = stage
-        screen.erase()
-        canvas = Canvas(screen)
-        height, width = canvas.height, canvas.width
-        full_rows = max(1, height - 4)
-        top = max(3, (height - 1) // 2)
-        columns = 2 if width >= 90 else 1
-        reference_capacity = max(1, top - 2) * columns
-        completion = Completion([])
-        completion_rows = max(1, height - top - 5)
-        cursor_position = None
-        if stage != 'draft':
-            results = session.live.results if stage == 'search' else session.frozen
-            first = _window_start(selected, first, len(results), full_rows)
-            if stage == 'search':
-                cursor_position = canvas.input(0, 'Search> ', session.query, query_cursor)
-                heading = 'LIVE SEARCH'
+        if dirty:
+            screen.erase()
+            canvas = Canvas(screen)
+            height, width = canvas.height, canvas.width
+            full_rows = max(1, height - 4)
+            top = max(3, (height - 1) // 2)
+            columns = 2 if width >= 90 else 1
+            reference_capacity = max(1, top - 2) * columns
+            completion = Completion([])
+            completion_rows = max(1, height - top - 5)
+            cursor_position = None
+            if stage != 'draft':
+                results = session.live.results if stage == 'search' else session.frozen
+                first = _window_start(selected, first, len(results), full_rows)
+                if stage == 'search':
+                    cursor_position = canvas.input(0, 'Search> ', session.query, query_cursor)
+                    heading = 'LIVE SEARCH'
+                else:
+                    cursor_position = canvas.input(0, 'Draft> ', session.draft, session.cursor)
+                    heading = 'FROZEN RESULTS'
+                canvas.write(1, f'{heading} - {len(results)} matches', curses.A_BOLD)
+                text_column = min(max(10, width // 2), 60)
+                for offset, result in enumerate(results[first:first + full_rows]):
+                    number = first + offset
+                    style = curses.A_REVERSE if number == selected else 0
+                    canvas.write(2 + offset, (' > ' if number == selected else '   ') + result.entry.text,
+                                 style | color, limit=text_column - 2)
+                    canvas.write(2 + offset, result.entry.description, style, column=text_column)
+                if not results:
+                    canvas.write(3, search_status or session.live.error or 'Type task keywords, for example: get network reachable')
+                detail = search_status or session.message
+                if selected is not None and selected < len(results):
+                    entry = results[selected].entry
+                    detail = f'[{entry.effect}] {entry.text}'
+                canvas.write(height - 2, detail)
+                canvas.write(height - 1, 'Arrows select | PgUp/PgDn jump | Enter choose/freeze | Ctrl+R back | Ctrl+C cancel')
+                if cursor_position and width and height:
+                    try:
+                        screen.move(*cursor_position)
+                    except curses.error:
+                        pass
+                screen.refresh()
+            elif height < 9 or width < 32:
+                canvas.write(0, 'Enlarge terminal for both panes.')
+                canvas.input(1, '> ', session.draft, session.cursor)
+                canvas.write(height - 1, 'Ctrl+R back | Ctrl+C cancel')
+                screen.refresh()
             else:
-                cursor_position = canvas.input(0, 'Draft> ', session.draft, session.cursor)
-                heading = 'FROZEN RESULTS'
-            canvas.write(1, f'{heading} - {len(results)} matches', curses.A_BOLD)
-            text_column = min(max(10, width // 2), 60)
-            for offset, result in enumerate(results[first:first + full_rows]):
-                number = first + offset
-                style = curses.A_REVERSE if number == selected else 0
-                canvas.write(2 + offset, (' > ' if number == selected else '   ') + result.entry.text,
-                             style | color, limit=text_column - 2)
-                canvas.write(2 + offset, result.entry.description, style, column=text_column)
-            if not results:
-                canvas.write(3, session.live.error or 'Type task keywords, for example: get network reachable')
-            detail = session.message
-            if selected is not None and selected < len(results):
-                entry = results[selected].entry
-                detail = f'[{entry.effect}] {entry.text}'
-            canvas.write(height - 2, detail)
-            canvas.write(height - 1, 'Arrows select | PgUp/PgDn jump | Enter choose/freeze | Ctrl+R back | Ctrl+C cancel')
-            if cursor_position and width and height:
-                try:
-                    screen.move(*cursor_position)
-                except curses.error:
-                    pass
-            screen.refresh()
-        elif height < 9 or width < 32:
-            canvas.write(0, 'Enlarge terminal for both panes.')
-            canvas.input(1, '> ', session.draft, session.cursor)
-            canvas.write(height - 1, 'Ctrl+R back | Ctrl+C cancel')
-            screen.refresh()
-        else:
-            reference = session.reference
-            reference_first = _window_start(reference_selected, reference_first, len(reference), reference_capacity, columns)
-            canvas.write(0, f'FROZEN REFERENCE - {session.command}' + (' [active]' if focus == 'reference' else ''), curses.A_BOLD)
-            cell = width // columns
-            for offset, entry in enumerate(reference[reference_first:reference_first + reference_capacity]):
-                number = reference_first + offset
-                row, column = 1 + offset // columns, (offset % columns) * cell
-                style = curses.A_REVERSE if focus == 'reference' and number == reference_selected else 0
-                reason = session.unavailable_reason(entry)
-                if reason:
-                    style |= curses.A_DIM
-                text = entry.text[len(entry.command):].strip() or '(command)'
-                name_width = min(max(12, cell // 2), 31)
-                canvas.write(row, ('> ' if number == reference_selected and focus == 'reference' else '  ') + text,
-                             style | color, column, name_width - 1)
-                canvas.write(row, reason or entry.description, style, column + name_width, cell - name_width - 2)
-            status = session.message
-            if session.next_steps:
-                status += (' | ' if status else '') + 'Next: ' + session.next_steps
-            canvas.write(top - 1, status, curses.A_DIM)
-            canvas.write(top, '─' * max(0, width - 1), curses.A_DIM)
-            if not hidden:
-                completion = session.catalog.complete(session.draft, session.cursor)
-            if session.pending_hint:
-                completion = Completion(completion.matches, session.pending_hint, completion.examples)
-            example_rows = min(len(completion.examples) + 1, max(0, height - top - 5)) if completion.examples else 0
-            completion_rows = max(1, height - top - 5 - example_rows)
-            completion_first = _window_start(completion_selected, completion_first, len(completion.matches), completion_rows)
-            canvas.write(top + 1, 'CC - LIVE COMPLETION' + (' [active]' if focus == 'draft' else ''), curses.A_BOLD)
-            screen.noutrefresh()
-            bottom = screen.derwin(height - top - 2, width, top + 2, 0)
-            help_text = 'F6 pane | Ctrl+R back | Enter insert/return | Ctrl+C cancel'
-            if session.pending_hint:
-                help_text = 'Enter confirms value | F6 pane | Ctrl+R back | Ctrl+C cancel'
-            draw_completion(bottom, session.draft, session.cursor, completion,
-                            completion_selected, completion_first, help_text, color)
+                reference = session.reference
+                reference_first = _window_start(reference_selected, reference_first, len(reference), reference_capacity, columns)
+                canvas.write(0, f'FROZEN REFERENCE - {session.command}' + (' [active]' if focus == 'reference' else ''), curses.A_BOLD)
+                cell = width // columns
+                for offset, entry in enumerate(reference[reference_first:reference_first + reference_capacity]):
+                    number = reference_first + offset
+                    row, column = 1 + offset // columns, (offset % columns) * cell
+                    style = curses.A_REVERSE if focus == 'reference' and number == reference_selected else 0
+                    reason = session.unavailable_reason(entry)
+                    if reason:
+                        style |= curses.A_DIM
+                    text = entry.text[len(entry.command):].strip() or '(command)'
+                    name_width = min(max(12, cell // 2), 31)
+                    canvas.write(row, ('> ' if number == reference_selected and focus == 'reference' else '  ') + text,
+                                 style | color, column, name_width - 1)
+                    canvas.write(row, reason or entry.description, style, column + name_width, cell - name_width - 2)
+                status = session.message
+                if session.next_steps:
+                    status += (' | ' if status else '') + 'Next: ' + session.next_steps
+                canvas.write(top - 1, status, curses.A_DIM)
+                canvas.write(top, '─' * max(0, width - 1), curses.A_DIM)
+                if not hidden:
+                    completion = session.catalog.complete(session.draft, session.cursor)
+                if session.pending_hint:
+                    completion = Completion(completion.matches, session.pending_hint, completion.examples)
+                example_rows = min(len(completion.examples) + 1, max(0, height - top - 5)) if completion.examples else 0
+                completion_rows = max(1, height - top - 5 - example_rows)
+                completion_first = _window_start(completion_selected, completion_first, len(completion.matches), completion_rows)
+                canvas.write(top + 1, 'CC - LIVE COMPLETION' + (' [active]' if focus == 'draft' else ''), curses.A_BOLD)
+                screen.noutrefresh()
+                bottom = screen.derwin(height - top - 2, width, top + 2, 0)
+                help_text = 'F6 pane | Ctrl+R back | Enter insert/return | Ctrl+C cancel'
+                if session.pending_hint:
+                    help_text = 'Enter confirms value | F6 pane | Ctrl+R back | Ctrl+C cancel'
+                draw_completion(bottom, session.draft, session.cursor, completion,
+                                completion_selected, completion_first, help_text, color)
 
-        key = screen.get_wch()
+        if actions and not session.search_pending:
+            key = actions.popleft()
+        elif buffered and not awaiting_choice:
+            key = buffered.popleft()
+        else:
+            screen.timeout(25 if session.search_pending else -1)
+            try:
+                key = screen.get_wch()
+            except curses.error:
+                if not session.search_pending or terminal_disconnected():
+                    return None
+                dirty = False
+                continue
+        dirty = True
         if key in ('\x03', '\x04'):
             return None
         if key == curses.KEY_RESIZE:
             screen.clearok(True)
             continue
+        if stage == 'search' and session.search_pending and awaiting_choice:
+            # Once Enter submits a choice, later edit/back keys belong to that
+            # choice's draft. Only cancellation and resize bypass this order.
+            buffered.append(key)
+            continue
         if key == '\x12':
+            actions.clear()
+            awaiting_choice = False
             session.back()
             focus, reference_selected, completion_selected = 'draft', None, None
             hidden = False
@@ -231,11 +300,19 @@ def _edit(screen, session, query_cursor):
             focus = 'reference' if focus == 'draft' else 'draft'
             continue
         if key == '\x1b':
+            actions.clear()
+            awaiting_choice = False
             hidden, completion_selected = True, None
             if stage != 'draft':
                 selected = None
             continue
         enter = key in ('\r', '\n', curses.KEY_ENTER)
+        if stage == 'search' and session.search_pending:
+            if enter or key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, '\t', curses.KEY_BTAB):
+                actions.append(key)
+                awaiting_choice = enter
+                session.scheduler.expedite()
+                continue
         if stage != 'draft':
             if results and key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, '\t', curses.KEY_BTAB):
                 step = -1 if key in (curses.KEY_UP, curses.KEY_BTAB) else 1
@@ -244,6 +321,7 @@ def _edit(screen, session, query_cursor):
                 selected = _move(selected, step, len(results))
                 continue
             if enter:
+                awaiting_choice = False
                 entry = results[selected].entry if selected is not None and selected < len(results) else None
                 if stage == 'search':
                     session.freeze(entry)
@@ -255,27 +333,10 @@ def _edit(screen, session, query_cursor):
                 hidden = False
                 continue
             if stage == 'search':
-                line, cursor = edit_text(session.query, query_cursor, key)
-                # Combine already-queued typing into one live query, without eating control keys.
-                screen.nodelay(True)
-                try:
-                    while True:
-                        try:
-                            queued = screen.get_wch()
-                        except curses.error:
-                            break
-                        if isinstance(queued, str) and queued.isprintable():
-                            line, cursor = edit_text(line, cursor, queued)
-                        else:
-                            if isinstance(queued, int):
-                                curses.ungetch(queued)
-                            else:
-                                curses.unget_wch(queued)
-                            break
-                finally:
-                    screen.nodelay(False)
+                line, cursor, immediate = coalesce_query_input(screen, session.query, query_cursor, key, buffered)
                 if line != session.query:
-                    session.set_query(line)
+                    actions.clear()
+                    session.set_query(line, immediate=immediate)
                     selected, first = None, 0
                 query_cursor = cursor
             else:
@@ -380,7 +441,8 @@ def main():
             sys.stdout.flush()
             return 0
         configure_unicode_terminal()
-        result = curses.wrapper(edit, SearchSession(index, catalog, query), cursor)
+        with HybridSearch(index.search_background) as scheduler:
+            result = curses.wrapper(edit, SearchSession(index, catalog, query, scheduler=scheduler), cursor)
         if result is None:
             return 130
         if args.result_fd is not None:

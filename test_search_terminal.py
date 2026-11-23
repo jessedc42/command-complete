@@ -1,9 +1,14 @@
 """Exercise cs through a real terminal, with a small documented database."""
 
 import fcntl
+from collections import deque
+import curses
 import gzip
 import json
+import os
 from pathlib import Path
+import pty
+import select
 import signal
 import shlex
 import struct
@@ -11,6 +16,7 @@ import sys
 import tempfile
 import termios
 import subprocess
+import time
 import unittest
 
 from command_search_index import write_database
@@ -19,6 +25,34 @@ from test_terminal import Terminal
 
 
 EDITOR = Path(__file__).with_name('command_search.py')
+
+
+class QueryInputTests(unittest.TestCase):
+    def test_buffered_text_is_edited_before_new_terminal_input(self):
+        from command_search import coalesce_query_input
+        class Input:
+            def __init__(self):
+                self.keys = deque('t')
+            def nodelay(self, enabled):
+                pass
+            def get_wch(self):
+                if self.keys:
+                    return self.keys.popleft()
+                raise curses.error()
+        line, cursor, immediate = coalesce_query_input(Input(), '', 0, 'h', deque('os'))
+        self.assertEqual((line, cursor, immediate), ('host', 4, False))
+
+    def test_buffered_control_key_is_left_for_the_main_event_loop(self):
+        from command_search import coalesce_query_input
+        class Input:
+            def nodelay(self, enabled):
+                pass
+            def get_wch(self):
+                raise AssertionError('new input must wait for the buffered control key')
+        keys = deque(['o', '\x12', 'x'])
+        line, cursor, immediate = coalesce_query_input(Input(), '', 0, 'h', keys)
+        self.assertEqual((line, cursor, immediate), ('ho', 2, False))
+        self.assertEqual(list(keys), ['\x12', 'x'])
 
 
 class SearchTerminal(Terminal):
@@ -40,7 +74,116 @@ class SearchTerminal(Terminal):
         self.directory.cleanup()
 
 
+class GatedSearchTerminal(SearchTerminal):
+    """Hold the real background database call until the test releases it."""
+    def __init__(self, query='', fixed_clock=False):
+        super().__init__(query)
+        self.gate = self.path / 'release-search'
+        script = f'''
+import sys,time
+from pathlib import Path
+import command_search
+from command_search_index import DatabaseSearchIndex
+from search_scheduler import HybridSearch
+original = DatabaseSearchIndex.search_background
+def gated(self, query, cancelled):
+    while not Path({str(self.gate)!r}).exists() and not cancelled():
+        time.sleep(.002)
+    return original(self, query, cancelled)
+DatabaseSearchIndex.search_background = gated
+if {fixed_clock!r}:
+    command_search.HybridSearch = lambda backend: HybridSearch(backend, clock=lambda: 0.0)
+sys.argv = {self.shell[1:]!r}
+sys.exit(command_search.main())
+'''
+        self.shell = [sys.executable, '-B', '-c', script]
+
+
 class SearchTerminalTests(unittest.TestCase):
+    def test_pasted_text_ending_in_a_partial_word_keeps_the_idle_delay(self):
+        with GatedSearchTerminal(fixed_clock=True) as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'reach x')
+            terminal.wait_for(b'Waiting for typing to pause')
+            self.assertNotIn(b'Searching...', terminal.output)
+            terminal.send(b' ')
+            terminal.wait_for(b'Searching...')
+            terminal.send(b'\x03')
+            terminal.wait_for(b'\x1b[?1049l')
+
+    def test_backtracking_after_pending_enter_follows_the_buffered_draft(self):
+        with GatedSearchTerminal('reach') as terminal:
+            terminal.wait_for(b'Searching...')
+            terminal.send(b'\x1bOB\rhost\x12')
+            # Keep the query blocked while all of the burst reaches the editor.
+            time.sleep(.05)
+            start = len(terminal.output)
+            terminal.gate.touch()
+            terminal.wait_for(b'FROZEN RESULTS', start)
+            terminal.send(b'\r\r')
+            terminal.wait_for_draft(b'ping host')
+
+    def test_terminal_disconnect_exits_without_relying_on_sighup(self):
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                fixture = GatedSearchTerminal('network') if pending else SearchTerminal('network')
+                master, slave = pty.openpty()
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+                process = subprocess.Popen(fixture.shell, stdin=slave, stdout=slave, stderr=slave,
+                                           env=dict(os.environ, TERM='xterm'))
+                os.close(slave)
+                try:
+                    marker = b'Searching...' if pending else b'13 matches'
+                    output = b''
+                    deadline = time.monotonic() + 5
+                    while marker not in output and time.monotonic() < deadline:
+                        if select.select([master], [], [], .1)[0]:
+                            output += os.read(master, 8192)
+                    self.assertIn(marker, output)
+                    os.close(master)
+                    master = None
+                    process.wait(timeout=2)
+                finally:
+                    if master is not None:
+                        os.close(master)
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+                    fixture.directory.cleanup()
+
+    def test_space_dispatches_even_when_the_idle_clock_has_not_advanced(self):
+        with GatedSearchTerminal(fixed_clock=True) as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'reach')
+            terminal.wait_for(b'Waiting for typing to pause')
+            terminal.send(b' ')
+            terminal.wait_for(b'Searching...')
+            terminal.gate.touch()
+            terminal.wait_for(b'Test network reachability')
+            terminal.send(b'\x04')
+            terminal.wait_for(b'\x1b[?1049l')
+
+    def test_typing_and_cancel_work_while_the_database_is_blocked(self):
+        with GatedSearchTerminal('network') as terminal:
+            terminal.wait_for(b'Searching...')
+            start = len(terminal.output)
+            terminal.send(b'\x15zzresponsive')
+            terminal.wait_for(b'zzresponsive', start)
+            self.assertFalse(terminal.gate.exists())
+            terminal.send(b'\x03')
+            terminal.wait_for(b'\x1b[?1049l')
+            self.assertEqual(terminal.process.wait(timeout=5), 130)
+
+    def test_pending_enter_uses_current_results_and_preserves_following_draft_text(self):
+        with GatedSearchTerminal('network') as terminal:
+            terminal.wait_for(b'Searching...')
+            terminal.send(b'\x15reach\x1bOB\r')
+            terminal.send(b'example.invalid\r')
+            self.assertNotIn(b'FROZEN REFERENCE', terminal.output)
+            terminal.gate.touch()
+            terminal.wait_for_draft(b'ping example.invalid')
+            self.assertEqual(terminal.process.wait(timeout=5), 0)
+
     def test_typing_filters_search_and_selecting_returns_an_editable_draft(self):
         with SearchTerminal() as terminal:
             terminal.wait_for(b'LIVE SEARCH')
@@ -172,7 +315,7 @@ class SearchTerminalTests(unittest.TestCase):
                 terminal.wait_for_draft(('ping ' + value).encode())
                 self.assertFalse(marker.exists())
 
-    def check_shell_handoff(self, shell, cancel=False):
+    def check_shell_handoff(self, shell, cancel=False, vi_pause=False):
         integration = EDITOR.with_name('shell-integration.sh')
         fixture = SearchTerminal()
         try:
@@ -184,10 +327,16 @@ class SearchTerminalTests(unittest.TestCase):
             with Terminal(shell=shell) as terminal:
                 terminal.wait_for(b'TEST> ')
                 start = len(terminal.output)
-                terminal.send((f'COMMAND_SEARCH_EXECUTABLE={shlex.quote(str(wrapper))} source '
-                               f'{shlex.quote(str(integration))}\r').encode())
+                setup = (f'COMMAND_SEARCH_EXECUTABLE={shlex.quote(str(wrapper))} source '
+                         f'{shlex.quote(str(integration))}')
+                if vi_pause:
+                    setup = 'set -o vi; ' + setup + '; ' + setup
+                terminal.send((setup + '\r').encode())
                 terminal.wait_for(b'TEST> ', start)
-                terminal.send('empty café\x18\x07'.encode())
+                terminal.send('empty café\x18'.encode())
+                if vi_pause:
+                    time.sleep(.8)
+                terminal.send(b'\x07')
                 terminal.wait_for(b'LIVE SEARCH')
                 if cancel:
                     terminal.send(b'\x04')
@@ -217,6 +366,13 @@ class SearchTerminalTests(unittest.TestCase):
         if int(major) < 5:
             self.skipTest('requires Bash 5+')
         self.check_shell_handoff([bash, '--noprofile', '--norc', '-i'])
+
+    def test_bash_vi_mode_search_prefix_survives_a_pause_and_repeated_sourcing(self):
+        bash = '/opt/homebrew/bin/bash' if Path('/opt/homebrew/bin/bash').exists() else '/bin/bash'
+        major = subprocess.check_output([bash, '-c', 'printf "%s" "${BASH_VERSINFO[0]}"'], text=True)
+        if int(major) < 5:
+            self.skipTest('requires Bash 5+')
+        self.check_shell_handoff([bash, '--noprofile', '--norc', '-i'], vi_pause=True)
 
     def test_bash_byte_locale_returns_unicode_draft_with_cursor_at_end(self):
         bash = '/opt/homebrew/bin/bash' if Path('/opt/homebrew/bin/bash').exists() else '/bin/bash'

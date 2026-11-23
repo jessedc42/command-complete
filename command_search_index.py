@@ -247,6 +247,7 @@ class _DatabaseResults(Sequence):
     """An immutable query snapshot with small, lazy pages rather than 600k objects."""
     def __init__(self, index, table, count):
         self.index, self.table, self.count = index, table, count
+        self.owns_index = False
         self.page = ()
         self.page_start = -1
 
@@ -291,15 +292,20 @@ class _DatabaseResults(Sequence):
 
     def __del__(self):
         try:
-            self.index.connection.execute(f'DROP TABLE IF EXISTS {self.table}')
+            if self.owns_index:
+                self.index.close()
+            else:
+                self.index.connection.execute(f'DROP TABLE IF EXISTS {self.table}')
         except (sqlite3.Error, AttributeError):
             pass
 
 
 class DatabaseSearchIndex:
-    def __init__(self, path, catalog, catalog_file=None):
+    def __init__(self, path, catalog, catalog_file=None, *, handoff=False):
         self.catalog = catalog
-        self.connection = sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro&immutable=1', uri=True)
+        self.path = Path(path).resolve()
+        self.connection = sqlite3.connect(self.path.as_uri() + '?mode=ro&immutable=1', uri=True,
+                                          check_same_thread=not handoff)
         self.connection.execute('PRAGMA temp_store=MEMORY')
         try:
             if self.connection.execute("SELECT value FROM info WHERE key='format'").fetchone() != ('1',):
@@ -316,6 +322,24 @@ class DatabaseSearchIndex:
 
     def close(self):
         self.connection.close()
+
+    def search_background(self, query, cancelled):
+        """Transfer a finished lazy snapshot, never a concurrently used reader."""
+        if cancelled():
+            raise InterruptedError('search superseded')
+        reader = DatabaseSearchIndex(self.path, self.catalog, handoff=True)
+        try:
+            reader.connection.set_progress_handler(lambda: int(cancelled()), 1000)
+            result = reader.search(query)
+            reader.connection.set_progress_handler(None, 0)
+            if isinstance(result.results, _DatabaseResults):
+                result.results.owns_index = True
+            else:
+                reader.close()
+            return result
+        except BaseException:
+            reader.close()
+            raise
 
     def resolve(self, command):
         return resolve_command(self.catalog, command)

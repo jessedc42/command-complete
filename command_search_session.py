@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import shlex
 
 from command_complete import SHELL_WORD, following_options, read_options, split_at_cursor
-from command_search_index import entry_text
+from command_search_index import SearchResults, entry_text
 from search_metadata import information_option
 
 
@@ -39,10 +39,13 @@ def primary_command(line):
 
 
 class SearchSession:
-    def __init__(self, index, catalog, query=''):
+    def __init__(self, index, catalog, query='', scheduler=None):
         self.index, self.catalog = index, catalog
         self.query = query
-        self.live = index.search(query)
+        self.scheduler = scheduler
+        self.live = SearchResults() if scheduler else index.search(query)
+        if scheduler:
+            scheduler.request(query, immediate=True)
         self.stage = 'search'
         self.frozen = ()
         self.reference = ()
@@ -64,12 +67,32 @@ class SearchSession:
         labels = self.pending.labels[self.pending.number + 1:] if self.pending else ()
         return ' '.join([*(f'<{label}>' for label in labels), entry_text('', self.queue).strip()]).strip()
 
-    def set_query(self, query):
+    @property
+    def search_pending(self):
+        return self.scheduler is not None and self.scheduler.pending
+
+    def poll_search(self):
+        result = self.scheduler.poll() if self.scheduler else None
+        if result is None:
+            return False
+        self.live = result
+        self.message = result.error or ''
+        return True
+
+    def set_query(self, query, immediate=False):
         self.query = query
-        self.live = self.index.search(query)
+        if self.scheduler:
+            self.scheduler.request(query, immediate=immediate)
+            self.live = SearchResults()
+        else:
+            self.live = self.index.search(query)
         self.message = self.live.error or ''
 
     def freeze(self, entry=None):
+        if self.search_pending:
+            self.scheduler.expedite()
+            self.message = 'Waiting for the current search before choosing.'
+            return False
         if self.live.error or not self.live.results:
             self.message = self.live.error or 'No matching commands. Edit the search query.'
             return False
