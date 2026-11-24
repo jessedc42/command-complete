@@ -7,7 +7,7 @@ Find a UNIX command by what you want to do, then draft it with live autocomplete
 
 ## Versioning
 
-The current version is 0.4.0. Both entry points read `version.py`. Run `command-complete --version` or `cs --version` to check. Releases use annotated Git tags such as `v0.4.0`. See the [v0.4.0 release notes](releases/v0.4.0.md).
+The current version is 0.5.0. Both entry points read `version.py`. Run `command-complete --version` or `cs --version` to check. Releases use annotated Git tags such as `v0.5.0`. See the [v0.5.0 release notes](releases/v0.5.0.md).
 
 During 0.x development, feature additions and breaking changes increase the minor version. Backward-compatible bug fixes increase the patch version. Version 1.0.0 will establish a stable command-line interface.
 
