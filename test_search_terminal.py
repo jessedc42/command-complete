@@ -57,10 +57,13 @@ class QueryInputTests(unittest.TestCase):
 
 
 class SearchTerminal(Terminal):
-    def __init__(self, query='', guard=None):
+    def __init__(self, query='', guard=None, size=(24, 100), description=None):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name)
         source = session().index
+        if description:
+            source.catalog.commands['ping']['description'] = description
+            source.metadata['commands']['ping']['description'] = description
         source.catalog.commands['touch'] = {'description': 'Create empty files.', 'flags': {}}
         catalog = self.path / 'catalog.json.gz'
         with gzip.open(catalog, 'wt') as f:
@@ -68,7 +71,7 @@ class SearchTerminal(Terminal):
         database = self.path / 'search.db'
         write_database(database, source.catalog, source.metadata)
         super().__init__(shell=[sys.executable, str(EDITOR), '--catalog', str(catalog),
-                                '--database', str(database), '--', query])
+                                '--database', str(database), '--', query], size=size)
         if guard is not None:
             self.shell.insert(self.shell.index('--'), '--short-query-guard' if guard else '--no-short-query-guard')
 
@@ -103,6 +106,75 @@ sys.exit(command_search.main())
 
 
 class SearchTerminalTests(unittest.TestCase):
+    def test_live_name_exclusion_can_be_added_and_removed(self):
+        with SearchTerminal() as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'network !pin !docker ')
+            terminal.wait_for(b'Test network connections')
+            start = len(terminal.output)
+            terminal.send(b'\x15network !nc !docker ')
+            terminal.wait_for(b'Test network reachability', start)
+            terminal.send(b'\x1bOB\r')
+            terminal.wait_for(b'FROZEN REFERENCE - ping')
+            terminal.send(b'\r')
+            terminal.wait_for_draft(b'ping ')
+
+    def test_exclusion_only_cli_query_and_literal_bang_stay_inert(self):
+        fixture = SearchTerminal()
+        try:
+            arguments = fixture.shell.copy()
+            arguments.insert(arguments.index('--'), '--matches')
+            arguments[-1] = '!ping !nc !docker'
+            result = subprocess.run(arguments, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(b'\ttouch\t', result.stdout)
+            self.assertNotIn(b'\tping', result.stdout)
+            arguments[-1] = '!'
+            result = subprocess.run(arguments, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, b'')
+        finally:
+            fixture.directory.cleanup()
+
+    def test_long_search_hint_wraps_and_selection_still_returns_only_the_draft(self):
+        hint = 'Test network reachability using probes sent to the target host. HINTTAIL'
+        with SearchTerminal('reachability', size=(18, 46), description=hint) as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.wait_for(b'HINTTAIL')
+            terminal.send(b'\x1bOB\r')
+            terminal.wait_for(b'FROZEN REFERENCE')
+            terminal.send(b'\r')
+            terminal.wait_for_draft(b'ping ')
+
+    def test_search_hint_reflows_after_terminal_resize(self):
+        hint = 'Test network reachability using probes sent to the target host. RESIZETAIL'
+        with SearchTerminal('reachability', description=hint) as terminal:
+            terminal.wait_for(b'RESIZETAIL')
+            start = len(terminal.output)
+            terminal.resize(18, 46)
+            terminal.wait_for(b'RESIZETAIL', start)
+            terminal.send(b'\x04')
+            terminal.wait_for(b'\x1b[?1049l')
+
+    def test_page_keys_reveal_oversized_search_and_frozen_reference_hints(self):
+        hint = 'Test network reachability. ' + 'probe ' * 90 + 'SCROLLTAIL'
+        with SearchTerminal('reachability', size=(16, 46), description=hint) as terminal:
+            terminal.wait_for(b'LIVE SEARCH')
+            terminal.send(b'\x1bOB')
+            terminal.wait_for(b'PgUp/PgDn scroll hint')
+            self.assertNotIn(b'SCROLLTAIL', terminal.output)
+            terminal.send(b'\x1b[6~' * 2)
+            terminal.wait_for(b'SCROLLTAIL')
+            terminal.send(b'\r')
+            terminal.wait_for(b'FROZEN REFERENCE')
+            start = len(terminal.output)
+            terminal.send(b'\x1b[17~\x1bOB')  # F6, then select the command's hint.
+            terminal.wait_for(b'PgUp/PgDn scroll hint', start)
+            terminal.send(b'\x1b[6~' * 7)
+            terminal.wait_for(b'SCROLLTAIL', start)
+            terminal.send(b'\x04')
+            terminal.wait_for(b'\x1b[?1049l')
+
     def test_guard_is_opt_in_and_space_submits_a_short_keyword(self):
         with SearchTerminal() as terminal:
             terminal.wait_for(b'LIVE SEARCH')

@@ -29,7 +29,7 @@ class Terminal:
     def __enter__(self):
         self.master, slave = pty.openpty()
         self.output = b""
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", *self.size, 0, 0))
         arguments = [sys.executable, str(EDITOR), "--", self.draft]
         env = dict(os.environ, TERM="xterm")
         env.pop("NO_COLOR", None)
@@ -45,9 +45,13 @@ class Terminal:
             os.close(slave)
         return self
 
-    def __init__(self, draft="", shell=None):
+    def __init__(self, draft="", shell=None, size=(24, 100)):
         self.draft = draft
         self.shell = shell
+        self.size = size
+
+    def resize(self, height, width):
+        fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack('HHHH', height, width, 0, 0))
 
     def __exit__(self, *_):
         if self.process.poll() is None:
@@ -84,6 +88,24 @@ class Terminal:
 
 
 class TerminalTests(unittest.TestCase):
+    def test_wrapped_completion_hint_can_be_scrolled_without_inserting_description(self):
+        hint = 'Show the probe count. ' + 'probe ' * 90 + 'CCTAIL'
+        script = f'''
+import curses
+from command_complete import Catalog, edit_draft
+catalog = Catalog({{'commands': {{'demo': {{'flags': {{'-q': 'switch'}}, 'flag_descriptions': {{'-q': {hint!r}}}}}}}}})
+print(curses.wrapper(edit_draft, catalog, 'demo -', 6))
+'''
+        with Terminal(shell=[sys.executable, '-B', '-c', script], size=(12, 46)) as terminal:
+            terminal.wait_for(b'Matches (1)')
+            terminal.send(b'\x1bOB')
+            terminal.wait_for(b'PgUp/PgDn scroll hint')
+            self.assertNotIn(b'CCTAIL', terminal.output)
+            terminal.send(b'\x1b[6~' * 3)
+            terminal.wait_for(b'CCTAIL')
+            terminal.send(b'\r\r')
+            terminal.wait_for_draft(b'demo -q ')
+
     @unittest.skipUnless(sys.platform == "darwin", "requires macOS command metadata")
     def test_system_profiler_value_hint_is_available_in_the_editor(self):
         with Terminal("system_profiler -detailLevel ") as terminal:

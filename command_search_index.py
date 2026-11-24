@@ -46,6 +46,22 @@ class SearchResults:
     error: str | None = None
 
 
+def query_parts(query):
+    words = set(query.casefold().split())
+    exclusions = tuple(sorted(word[1:] for word in words if word.startswith('!') and len(word) > 1))
+    positive = {word for word in words if not word.startswith('!')}
+    filters = positive.intersection(('get', 'set'))
+    return sorted(tokens(' '.join(positive - filters))), filters, exclusions
+
+
+def excluded_names(commands, prefixes):
+    """Match literal prefixes of executable/subcommand names, never flag prose."""
+    if not prefixes:
+        return set()
+    return {command for command in commands
+            if any(part.casefold().startswith(prefixes) for part in command.split())}
+
+
 def option_for(entry, flag, kind, root_entry=None):
     arguments = entry.get('flag_arguments', {}).get(flag)
     if arguments is None and root_entry:
@@ -157,14 +173,15 @@ class SearchIndex:
         return tuple(self.by_command.get(command, ()))
 
     def search(self, query):
-        words = set(query.casefold().split())
-        filters = words.intersection(('get', 'set'))
+        keywords, filters, exclusions = query_parts(query)
         if len(filters) > 1:
             return SearchResults(error='Choose either get or set, not both.')
-        keywords = sorted(tokens(' '.join(words - filters)))
+        blocked = excluded_names(self.by_command, exclusions)
         allowed = set(self.effects[next(iter(filters))]) if filters else None
         if not keywords:
-            return SearchResults(tuple(SearchResult(self.entries[i], 0) for i in sorted(allowed or ())))
+            candidates = sorted(allowed) if allowed is not None else range(len(self.entries)) if exclusions else ()
+            return SearchResults(tuple(SearchResult(self.entries[i], 0) for i in candidates
+                                       if self.entries[i].command not in blocked))
         scores = defaultdict(int)
         for keyword in keywords:
             matching = set()
@@ -175,7 +192,8 @@ class SearchIndex:
             if allowed is not None:
                 matching.intersection_update(allowed)
             for number in matching:
-                scores[number] += 1
+                if self.entries[number].command not in blocked:
+                    scores[number] += 1
         order = sorted(scores, key=lambda number: (-scores[number], number))
         return SearchResults(tuple(SearchResult(self.entries[i], scores[i]) for i in order))
 
@@ -349,17 +367,25 @@ class DatabaseSearchIndex:
             'SELECT payload FROM entries WHERE command=? ORDER BY sort_key,stable_id', (command,)))
 
     def search(self, query):
-        words = set(query.casefold().split())
-        filters = words.intersection(('get', 'set'))
+        keywords, filters, exclusions = query_parts(query)
         if len(filters) > 1:
             return SearchResults(error='Choose either get or set, not both.')
-        keywords = sorted(tokens(' '.join(words - filters)))
-        if not keywords and not filters:
+        if not keywords and not filters and not exclusions:
             return SearchResults()
         self.serial += 1
         table = f'results_{self.serial}'
         self.connection.execute(f'CREATE TEMP TABLE {table} (position INTEGER PRIMARY KEY,entry_id INTEGER,score INTEGER)')
         parameters = []
+        conditions = []
+        if exclusions:
+            blocked = excluded_names((row[0] for row in self.connection.execute('SELECT DISTINCT command FROM entries')),
+                                     exclusions)
+            excluded = f'excluded_{self.serial}'
+            self.connection.execute(f'CREATE TEMP TABLE {excluded} (command TEXT PRIMARY KEY) WITHOUT ROWID')
+            self.connection.executemany(f'INSERT INTO {excluded} VALUES (?)', ((name,) for name in blocked))
+            conditions.append(f'e.command NOT IN (SELECT command FROM {excluded})')
+        if filters:
+            conditions.append('e.effect=?')
         if keywords:
             # Materialize keyword hits in bounded batches: SQLite limits the
             # number of SELECT arms, independently of its parameter limit.
@@ -374,14 +400,19 @@ class DatabaseSearchIndex:
                     self.connection.execute(f'INSERT INTO {hits} ' + ' UNION ALL '.join(pieces), parameters)
                     pieces, parameters = [], []
             sql = (f'SELECT e.id,count(*) AS score FROM {hits} hits JOIN entries e ON e.id=hits.entry_id')
-            if filters:
-                sql += ' WHERE e.effect=?'
-                parameters.append(next(iter(filters)))
+        else:
+            sql = 'SELECT e.id,0 FROM entries e'
+        if conditions:
+            sql += ' WHERE ' + ' AND '.join(conditions)
+        if filters:
+            parameters.append(next(iter(filters)))
+        if keywords:
             sql += ' GROUP BY e.id ORDER BY score DESC,e.sort_key,e.stable_id'
         else:
-            sql = 'SELECT id,0 FROM entries WHERE effect=? ORDER BY sort_key,stable_id'
-            parameters.append(next(iter(filters)))
+            sql += ' ORDER BY e.sort_key,e.stable_id'
         cursor = self.connection.execute(f'INSERT INTO {table}(entry_id,score) ' + sql, parameters)
         if keywords:
             self.connection.execute(f'DROP TABLE {hits}')
+        if exclusions:
+            self.connection.execute(f'DROP TABLE {excluded}')
         return SearchResults(_DatabaseResults(self, table, cursor.rowcount))

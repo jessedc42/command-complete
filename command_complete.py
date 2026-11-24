@@ -289,7 +289,130 @@ def cell_width(char):
     return 2 if unicodedata.east_asian_width(char) in "WF" else 1
 
 
-def draw(screen, line, cursor, completion, selected, first, message, flag_style=0):
+def wrap_cells(text, width):
+    """Wrap inert text at word boundaries, counting terminal cells, not bytes."""
+    if width <= 0:
+        return []
+    lines, line, used = [], '', 0
+    for word in visible(text).split():
+        size = sum(map(cell_width, word))
+        if line and used + 1 + size <= width:
+            line, used = line + ' ' + word, used + 1 + size
+            continue
+        if line:
+            lines.append(line)
+            line, used = '', 0
+        for char in word:
+            size = cell_width(char)
+            if line and used + size > width:
+                lines.append(line)
+                line, used = '', 0
+            line, used = line + char, used + size
+    if line:
+        lines.append(line)
+    return lines
+
+
+class HintList:
+    """A lazy, variable-height list shared by completion and search panes."""
+    def __init__(self):
+        self.first = self.offset = 0
+        self.selected = None
+        self.selected_height = self.rows = 0
+        self.last = 0
+        self.geometry = None
+
+    def page(self, direction):
+        """Scroll an oversized selected entry before paging to another entry."""
+        if self.selected is None:
+            return False
+        offset = max(0, min(max(0, self.selected_height - self.rows),
+                            self.offset + direction * max(1, self.rows - 1)))
+        if offset == self.offset:
+            return False
+        self.offset = offset
+        return True
+
+    def draw(self, write, items, selected, top, rows, width, color=0, columns=1,
+             describe=lambda item: item, active=True):
+        rows = max(0, rows)
+        geometry = rows, width, columns
+        if selected != self.selected or geometry != self.geometry:
+            self.offset = 0
+        self.selected, self.geometry, self.rows = selected, geometry, rows
+        self.selected_height = 0
+        self.last = 0
+        if not items or not rows or width < 3:
+            self.first = self.offset = 0
+            return
+        cell = width // columns
+        blocks = {}
+
+        def block(start):
+            if start not in blocks:
+                entries = []
+                for index in range(start, min(start + columns, len(items))):
+                    name, hint, *extra = describe(items[index])
+                    prefix = ' > ' if index == selected and active else '   '
+                    # Stack in tiny cells; keep a useful hint column otherwise.
+                    split = min(60, cell // 2) if hint and cell >= 24 else 0
+                    if split:
+                        names = wrap_cells(name, split - len(prefix) - 1) or ['']
+                        names = [prefix + names[0]] + ['   ' + line for line in names[1:]]
+                        hints = wrap_cells(hint, cell - split - 1)
+                        lines = [(names[n] if n < len(names) else '',
+                                  hints[n] if n < len(hints) else '', split)
+                                 for n in range(max(len(names), len(hints)))]
+                    else:
+                        names = wrap_cells(name, cell - 4) or ['']
+                        lines = [(prefix + names[0], '', 0)]
+                        lines += [('   ' + line, '', 0) for line in names[1:]]
+                        lines += [('', line, 1) for line in wrap_cells(hint, cell - 2)]
+                    entries.append((index, name, lines, extra[0] if extra else 0))
+                blocks[start] = entries, max(len(entry[2]) for entry in entries)
+            return blocks[start]
+
+        self.first = max(0, min(self.first, len(items) - 1)) // columns * columns
+        if selected is None:
+            self.first = self.offset = 0
+        else:
+            target = selected // columns * columns
+            self.selected_height = block(target)[1]
+            self.offset = min(self.offset, max(0, self.selected_height - rows))
+            if target < self.first or self.offset:
+                self.first = target
+            used, index = 0, self.first
+            while index <= target and used <= rows:
+                used += block(index)[1]
+                index += columns
+            if used > rows or index <= target:
+                self.first = target
+                used = self.selected_height
+                while self.first >= columns and used + block(self.first - columns)[1] <= rows:
+                    self.first -= columns
+                    used += block(self.first)[1]
+        row, index = 0, self.first
+        while row < rows and index < len(items):
+            entries, size = block(index)
+            skip = self.offset if index == self.first else 0
+            for number, name, lines, extra_style in entries:
+                style = extra_style | (curses.A_REVERSE if number == selected and active else 0)
+                name_style = color(name) if callable(color) else color
+                column = (number % columns) * cell
+                for n in range(skip, min(size, skip + rows - row)):
+                    if n >= len(lines):
+                        continue
+                    label, hint, split = lines[n]
+                    if label:
+                        write(top + row + n - skip, label, style | name_style, column=column)
+                    if hint:
+                        write(top + row + n - skip, hint, style, column=column + split)
+            row += size - skip
+            index += columns
+        self.last = min(index, len(items))
+
+
+def draw(screen, line, cursor, completion, selected, first, message, flag_style=0, hint_list=None):
     height, width = screen.getmaxyx()
     screen.erase()
 
@@ -327,23 +450,20 @@ def draw(screen, line, cursor, completion, selected, first, message, flag_style=
     example_rows = min(len(completion.examples) + 1, max(0, height - 4)) if completion.examples else 0
     hint = f"Argument: {completion.hint}" if completion.hint else ""
     if matches:
-        end = min(first + max(height - 3 - example_rows, 0), len(matches))
+        view = hint_list if hint_list is not None else HintList()
+        if hint_list is None:
+            view.first = first
+        view.draw(write, matches, selected, 2, height - 3 - example_rows, width,
+                  color=lambda name: flag_style if name.startswith('-') else 0,
+                  describe=lambda match: (match.text, match.description))
         heading = f"Matches ({len(matches)})"
-        if end > first and (first or end < len(matches)):
-            heading += f"  {first + 1}-{end}"
+        if view.last and (view.first or view.last < len(matches)):
+            heading += f"  {view.first + 1}-{view.last}"
         if hint:
             heading += f"  |  {hint}"
         write(1, heading, curses.A_BOLD)
-        description_column = min(6 + max(len(match.text) for match in matches), max(12, width // 2))
-        for row, match in enumerate(matches[first:end], start=2):
-            active = row - 2 + first == selected
-            style = curses.A_REVERSE if active else 0
-            name_style = flag_style if match.text.startswith("-") else 0
-            write(row, ("  > " if active else "    ") + match.text,
-                  style | name_style,
-                  max_columns=description_column - 2 if match.description else None)
-            if match.description:
-                write(row, visible(match.description), style, column=description_column)
+        if view.selected_height > view.rows:
+            message = "PgUp/PgDn scroll hint | Up/Down select | " + message
     elif hint:
         write(1, hint, curses.A_BOLD)
     if example_rows:
@@ -378,20 +498,18 @@ def edit(screen, catalog, line, cursor):
             pass
     completion = catalog.complete(line, cursor) if line[:cursor].strip() else Completion([])
     selected = None
-    first = 0
+    hint_list = HintList()
     while True:
         matches = completion.matches
         height = screen.getmaxyx()[0]
         example_rows = min(len(completion.examples) + 1, max(0, height - 4)) if completion.examples else 0
         rows = max(height - 3 - example_rows, 1)
-        if selected is not None:
-            first = max(selected - rows + 1, min(first, selected))
         message = EDITOR_HELP
         if selected is not None:
             message = SELECTION_HELP
         elif matches:
             message = SUGGESTION_HELP
-        draw(screen, line, cursor, completion, selected, first, message, flag_style)
+        draw(screen, line, cursor, completion, selected, 0, message, flag_style, hint_list)
         key = screen.get_wch()
         if key in ("\x03", "\x04"):
             return None
@@ -399,16 +517,17 @@ def edit(screen, catalog, line, cursor):
             continue
         if key == "\x1b":
             completion = Completion([])
-            selected, first = None, 0
+            selected = None
             continue
         if key == "\t" and not matches:
             completion = catalog.complete(line, cursor)
             matches = completion.matches
         if matches and key in (curses.KEY_PPAGE, curses.KEY_NPAGE):
+            if hint_list.page(1 if key == curses.KEY_NPAGE else -1):
+                continue
             step = rows if key == curses.KEY_NPAGE else -rows
             current = selected if selected is not None else 0
             selected = max(0, min(len(matches) - 1, current + step))
-            first = max(0, min(len(matches) - rows, first + step))
             continue
         if (
             matches
@@ -432,7 +551,7 @@ def edit(screen, catalog, line, cursor):
             line, cursor = edit_text(line, cursor, key)
         if previous != (line, cursor):
             completion = catalog.complete(line, cursor) if line[:cursor].strip() else Completion([])
-            selected, first = None, 0
+            selected = None
 
 
 def edit_draft(screen, catalog, line, cursor):

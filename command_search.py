@@ -15,7 +15,7 @@ import sqlite3
 import sys
 import tempfile
 
-from command_complete import (Catalog, Completion, __version__, apply_match, catalog_path,
+from command_complete import (Catalog, Completion, HintList, __version__, apply_match, catalog_path,
                               cell_width, draw as draw_completion, visible)
 from command_search_index import DatabaseSearchIndex
 from command_search_session import SearchSession
@@ -84,15 +84,6 @@ class Canvas:
         return row, min(max(0, self.width - 1), len(label) + sum(map(cell_width, before)))
 
 
-def _window_start(selected, first, count, capacity, columns=1):
-    if selected is not None:
-        if selected < first:
-            first = (selected // columns) * columns
-        elif selected >= first + capacity:
-            first = max(0, ((selected // columns) - capacity // columns + 1) * columns)
-    return max(0, min(first, max(0, count - capacity + columns - 1) // columns * columns))
-
-
 def _move(selected, step, count):
     if not count:
         return None
@@ -158,24 +149,23 @@ def _edit(screen, session, query_cursor):
     color = _colors()
     focus = 'draft'
     selected = reference_selected = completion_selected = None
-    first = reference_first = completion_first = 0
     hidden = False
     previous_stage = None
     previous_command = None
     actions, buffered = deque(), deque()
     awaiting_choice, dirty = False, True
     previous_status = None
+    result_view, reference_view, completion_view = HintList(), HintList(), HintList()
     while True:
         if session.stage == 'search' and session.poll_search():
-            selected, first = None, 0
+            selected = None
             dirty = True
         search_status = session.scheduler.status if session.scheduler and session.stage == 'search' else ''
         if search_status != previous_status:
             dirty, previous_status = True, search_status
         stage = session.stage
         if session.command != previous_command:
-            reference_selected, reference_first = None, 0
-            completion_selected, completion_first = None, 0
+            reference_selected = completion_selected = None
             previous_command = session.command
         if stage != previous_stage:
             screen.clearok(True)
@@ -193,7 +183,6 @@ def _edit(screen, session, query_cursor):
             cursor_position = None
             if stage != 'draft':
                 results = session.live.results if stage == 'search' else session.frozen
-                first = _window_start(selected, first, len(results), full_rows)
                 if stage == 'search':
                     cursor_position = canvas.input(0, 'Search> ', session.query, query_cursor)
                     heading = 'LIVE SEARCH'
@@ -201,13 +190,8 @@ def _edit(screen, session, query_cursor):
                     cursor_position = canvas.input(0, 'Draft> ', session.draft, session.cursor)
                     heading = 'FROZEN RESULTS'
                 canvas.write(1, f'{heading} - {len(results)} matches', curses.A_BOLD)
-                text_column = min(max(10, width // 2), 60)
-                for offset, result in enumerate(results[first:first + full_rows]):
-                    number = first + offset
-                    style = curses.A_REVERSE if number == selected else 0
-                    canvas.write(2 + offset, (' > ' if number == selected else '   ') + result.entry.text,
-                                 style | color, limit=text_column - 2)
-                    canvas.write(2 + offset, result.entry.description, style, column=text_column)
+                result_view.draw(canvas.write, results, selected, 2, max(0, height - 4), width,
+                                 color=color, describe=lambda result: (result.entry.text, result.entry.description))
                 if not results:
                     canvas.write(3, search_status or session.live.error or session.guard_hint or
                                  'Type task keywords, for example: get network reachable')
@@ -216,7 +200,10 @@ def _edit(screen, session, query_cursor):
                     entry = results[selected].entry
                     detail = f'[{entry.effect}] {entry.text}'
                 canvas.write(height - 2, detail)
-                canvas.write(height - 1, 'Arrows select | PgUp/PgDn jump | Enter choose/freeze | Ctrl+R back | Ctrl+C cancel')
+                help_text = 'Arrows select | PgUp/PgDn jump | Enter choose/freeze | Ctrl+R back | Ctrl+C cancel'
+                if result_view.selected_height > result_view.rows:
+                    help_text = 'PgUp/PgDn scroll hint | ' + help_text
+                canvas.write(height - 1, help_text)
                 if cursor_position and width and height:
                     try:
                         screen.move(*cursor_position)
@@ -230,24 +217,19 @@ def _edit(screen, session, query_cursor):
                 screen.refresh()
             else:
                 reference = session.reference
-                reference_first = _window_start(reference_selected, reference_first, len(reference), reference_capacity, columns)
                 canvas.write(0, f'FROZEN REFERENCE - {session.command}' + (' [active]' if focus == 'reference' else ''), curses.A_BOLD)
-                cell = width // columns
-                for offset, entry in enumerate(reference[reference_first:reference_first + reference_capacity]):
-                    number = reference_first + offset
-                    row, column = 1 + offset // columns, (offset % columns) * cell
-                    style = curses.A_REVERSE if focus == 'reference' and number == reference_selected else 0
+                def describe_reference(entry):
                     reason = session.unavailable_reason(entry)
-                    if reason:
-                        style |= curses.A_DIM
                     text = entry.text[len(entry.command):].strip() or '(command)'
-                    name_width = min(max(12, cell // 2), 31)
-                    canvas.write(row, ('> ' if number == reference_selected and focus == 'reference' else '  ') + text,
-                                 style | color, column, name_width - 1)
-                    canvas.write(row, reason or entry.description, style, column + name_width, cell - name_width - 2)
+                    return text, reason or entry.description, curses.A_DIM if reason else 0
+                reference_view.draw(canvas.write, reference, reference_selected, 1, top - 2, width,
+                                    color=color, columns=columns, describe=describe_reference,
+                                    active=focus == 'reference')
                 status = session.message
                 if session.next_steps:
                     status += (' | ' if status else '') + 'Next: ' + session.next_steps
+                if focus == 'reference' and reference_view.selected_height > reference_view.rows:
+                    status = 'PgUp/PgDn scroll hint | ' + status
                 canvas.write(top - 1, status, curses.A_DIM)
                 canvas.write(top, '─' * max(0, width - 1), curses.A_DIM)
                 if not hidden:
@@ -256,7 +238,6 @@ def _edit(screen, session, query_cursor):
                     completion = Completion(completion.matches, session.pending_hint, completion.examples)
                 example_rows = min(len(completion.examples) + 1, max(0, height - top - 5)) if completion.examples else 0
                 completion_rows = max(1, height - top - 5 - example_rows)
-                completion_first = _window_start(completion_selected, completion_first, len(completion.matches), completion_rows)
                 canvas.write(top + 1, 'CC - LIVE COMPLETION' + (' [active]' if focus == 'draft' else ''), curses.A_BOLD)
                 screen.noutrefresh()
                 bottom = screen.derwin(height - top - 2, width, top + 2, 0)
@@ -264,7 +245,7 @@ def _edit(screen, session, query_cursor):
                 if session.pending_hint:
                     help_text = 'Enter confirms value | F6 pane | Ctrl+R back | Ctrl+C cancel'
                 draw_completion(bottom, session.draft, session.cursor, completion,
-                                completion_selected, completion_first, help_text, color)
+                                completion_selected, 0, help_text, color, completion_view)
 
         if actions and not session.search_pending:
             key = actions.popleft()
@@ -317,6 +298,8 @@ def _edit(screen, session, query_cursor):
                     continue
         if stage != 'draft':
             if results and key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, '\t', curses.KEY_BTAB):
+                if key in (curses.KEY_PPAGE, curses.KEY_NPAGE) and result_view.page(1 if key == curses.KEY_NPAGE else -1):
+                    continue
                 step = -1 if key in (curses.KEY_UP, curses.KEY_BTAB) else 1
                 if key in (curses.KEY_PPAGE, curses.KEY_NPAGE):
                     step = -full_rows if key == curses.KEY_PPAGE else full_rows
@@ -339,7 +322,7 @@ def _edit(screen, session, query_cursor):
                 if line != session.query:
                     actions.clear()
                     session.set_query(line, immediate=immediate)
-                    selected, first = None, 0
+                    selected = None
                 query_cursor = cursor
             else:
                 line, cursor = edit_text(session.draft, session.cursor, key)
@@ -351,6 +334,8 @@ def _edit(screen, session, query_cursor):
         if focus == 'reference':
             if key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT,
                        curses.KEY_PPAGE, curses.KEY_NPAGE, '\t', curses.KEY_BTAB):
+                if key in (curses.KEY_PPAGE, curses.KEY_NPAGE) and reference_view.page(1 if key == curses.KEY_NPAGE else -1):
+                    continue
                 step = {curses.KEY_UP: -columns, curses.KEY_DOWN: columns,
                         curses.KEY_LEFT: -1, curses.KEY_RIGHT: 1,
                         curses.KEY_PPAGE: -reference_capacity, curses.KEY_NPAGE: reference_capacity,
@@ -369,6 +354,8 @@ def _edit(screen, session, query_cursor):
             completion = session.catalog.complete(session.draft, session.cursor)
             matches, hidden = completion.matches, False
         if matches and key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, '\t', curses.KEY_BTAB):
+            if key in (curses.KEY_PPAGE, curses.KEY_NPAGE) and completion_view.page(1 if key == curses.KEY_NPAGE else -1):
+                continue
             if key == '\t' and len(matches) == 1:
                 line, cursor = apply_match(session.draft, matches[0])
                 session.set_draft(line, cursor)
@@ -392,7 +379,7 @@ def _edit(screen, session, query_cursor):
         line, cursor = edit_text(session.draft, session.cursor, key)
         if (line, cursor) != (session.draft, session.cursor):
             session.set_draft(line, cursor)
-            completion_selected, hidden, completion_first = None, False, 0
+            completion_selected, hidden = None, False
 
 
 def edit(screen, session, query_cursor):

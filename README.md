@@ -66,7 +66,13 @@ The setting is read on each launch; no binding reload is needed. `cs --no-short-
 
 Each row shows a command form and a brief purpose hint. Matching is case-insensitive and uses word prefixes: `reach` matches `reachable` and `reachability`. Ordinary keywords use inclusive OR matching, so adding `dog` does not remove ping from a network reachability search. More distinct matched query words rank first; ties sort alphabetically by command form. Repeated query words do not add score.
 
+Purpose hints wrap to fit the terminal in search results, the frozen reference, and live completion. Narrow windows show fewer entries; very narrow lists place hints below their command or flag. Resizing reflows the text. If a highlighted entry is taller than its pane, **Page Up/Page Down** scrolls through that entry before jumping to other entries. **Up/Down** still selects another entry.
+
 The complete words `get` and `set` are strict effect filters. `get` means an intended observation; `set` means deliberate mutation. Argument-dependent forms have `depends`, and insufficient evidence gives `unknown`; neither appears under a strict filter. `get set` is a query error. A filter alone lists matching entries alphabetically. An empty query shows instructions.
+
+Prefix a command name with `!` to exclude it: `network !aws` finds network matches while excluding AWS command forms. Exclusions match case-insensitive prefixes of the executable or a subcommand name, including its literal punctuation: `!docker` excludes Docker forms, `!stop` excludes subcommands named `stop`, and `!tool-get` matches the name `tool-get`. They do not inspect descriptions, purpose keywords, flags, or arguments. In particular, `!get` excludes names beginning with `get`; it does not negate the `get` effect filter.
+
+Multiple exclusions all apply, regardless of positive keyword matches, and do not affect scores. `!aws !docker` lists the remaining forms alphabetically. A lone `!` is ignored while you finish typing. When supplying a query from the shell, single-quote it: `cs 'network !aws'`. Term exclusion is reserved for a future addition.
 
 Effects describe catalog forms, not arbitrary edited shell text. For example, a formatting flag on a mutating operation retains the operation's effect. These labels and the documented conflict checks are reference metadata, not a complete validator.
 
